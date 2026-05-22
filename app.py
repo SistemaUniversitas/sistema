@@ -47,6 +47,11 @@ app.layout = html.Div(style={"background": BG, "minHeight": "100vh"}, children=[
                 }
             )
             for page in dash.page_registry.values()
+            if page["path"] not in {
+                "/2007", "/2015", "/2024",
+                "/saberpro2006", "/saberpro2015", "/saberpro2023",
+                "/saberpro2023-db",
+            }
         ], style={"display": "flex", "gap": "10px"}),
     ], style={
         "display": "flex", "justifyContent": "space-between",
