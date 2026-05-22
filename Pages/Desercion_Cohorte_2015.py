@@ -350,12 +350,6 @@ def load_or_build(force=False) -> dict:
         t0 = time.time()
         with open(CACHE_FILE, "rb") as f:
             payload = pickle.load(f)
-        if not REQUIRED_KEYS.issubset(payload.keys()):
-            print("\n  ⚠️  Caché desactualizada. Reprocesando…")
-            return build_cache()
-        if payload.get("fingerprint") != combined_fingerprint():
-            print("\n  ⚠️  Los CSV cambiaron. Reprocesando…")
-            return build_cache()
         print(f"OK ({time.time()-t0:.1f}s)")
         return payload
     return build_cache()

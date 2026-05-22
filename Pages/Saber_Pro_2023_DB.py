@@ -525,11 +525,7 @@ def load_or_build(force=False) -> dict:
         t0 = time.time()
         with open(CACHE_FILE, "rb") as f:
             payload = pickle.load(f)
-        if not REQUIRED_KEYS.issubset(payload.keys()):
-            missing = REQUIRED_KEYS - payload.keys()
-            print(f"\n  ⚠️  Caché desactualizada (faltan: {missing}). Reprocesando…")
-            return build_cache()
-        print(f"OK ({time.time()-t0:.1f}s)  →  {payload['total']:,} registros listos.")
+        print(f"OK ({time.time()-t0:.1f}s)  →  {payload.get('total', '?'):,} registros listos.")
         return payload
     return build_cache()
 
