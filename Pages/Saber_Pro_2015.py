@@ -437,12 +437,7 @@ def load_or_build(force=False) -> dict:
             print("\n  ⚠️  El CSV cambió. Reprocesando caché…")
             return build_cache(CSV_PATH)
         """
-        # Forzar rebuild si la caché está desactualizada (faltan claves)
-        if not REQUIRED_KEYS.issubset(payload.keys()):
-            missing = REQUIRED_KEYS - payload.keys()
-            print(f"\n  ⚠️  Caché desactualizada (faltan: {missing}). Reprocesando…")
-            return build_cache(CSV_PATH)
-        print(f"OK ({time.time()-t0:.1f}s)  →  {payload['total']:,} registros listos.")
+        print(f"OK ({time.time()-t0:.1f}s)  →  {payload.get('total', '?'):,} registros listos.")
         return payload
     return build_cache(CSV_PATH)
 
