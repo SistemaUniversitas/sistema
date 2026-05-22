@@ -58,7 +58,7 @@ PG_SCHEMA   = "public"
 
 # Cohortes Saber 11 analizadas (se comparan con SB Pro 2015–2023 vía llaves)
 SB11_YEARS        = list(range(2010, 2019))  # 2010 a 2018
-SBPRO_YEARS       = list(range(2015, 2024))  # 2015 a 2023
+SBPRO_YEARS       = list(range(2014, 2024))  # 2014 a 2023
 STANDARD_YEARS    = 5                        # tiempo estándar SB11 → SB Pro en años
 STANDARD_SEMESTERS = STANDARD_YEARS * 2     # = 10 semestres
 
@@ -284,25 +284,28 @@ def _incert_stats(periodo_dist: dict, sb11_year: int):
 
 def _fmt_sems(d_sems: float, short=False) -> str:
     """Formatea semestres de desviación como texto legible.
+    Redondea primero al semestre entero más cercano para que prefijo y
+    desglose sean siempre consistentes (evita '4 sem → 2a 1sem' o '2 sem').
     short=True  → '+3 sem (+1a 1sem)'
     short=False → '1 año y 1 semestre después del estándar'"""
-    if abs(d_sems) < 0.1:
-        return "en el estándar" if short else "en el estándar (5 años exactos)"
-    s       = abs(d_sems)
-    years   = int(s // 2)
-    sems    = int(round(s % 2))
-    sign    = "+" if d_sems > 0 else "−"
+    # Redondear al semestre entero: garantiza years*2 + sems == s_int
+    s_int = round(abs(d_sems))   # ej. 4.7 → 5 · 4.3 → 4 · 3.5 → 4
+    if s_int == 0:
+        return "en el estándar" if short else "en el estándar (≈5 años)"
+    years = s_int // 2           # 0, 1, 2, 3 …   (siempre entero)
+    sems  = s_int % 2            # siempre 0 ó 1  (nunca puede ser 2)
+    sign  = "+" if d_sems > 0 else "−"
     if short:
         parts = []
         if years: parts.append(f"{years}a")
         if sems:  parts.append("1sem")
-        return f"{sign}{int(s)} sem ({sign}{' '.join(parts) or '½a'})"
+        return f"{sign}{s_int} sem ({sign}{' '.join(parts) or '1sem'})"
     else:
         parts = []
         if years: parts.append(f"{years} año{'s' if years > 1 else ''}")
-        if sems:  parts.append(f"{sems} semestre")
+        if sems:  parts.append("1 semestre")
         suffix = "después del estándar" if d_sems > 0 else "antes del estándar"
-        return f"{' y '.join(parts) or '< 1 semestre'} {suffix}"
+        return f"{' y '.join(parts) or '1 semestre'} {suffix}"
 
 
 def incert_anos_fig(periodo_dist: dict, sb11_year: int):
