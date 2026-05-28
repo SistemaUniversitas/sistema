@@ -80,16 +80,26 @@ PUNTAJES_NUM = [
 LLAVES_TABLE = "llaves"
 LLAVES_COLS  = ["estu_consecutivo_sbpro", "estu_consecutivo_sb11"]
 
-SB11_YEARS = list(range(2015, 2025))
+SB11_YEARS    = list(range(2010, 2025))   # SB 11 disponibles en BD
+YEARS_PAREADO = list(range(2016, 2024))   # SB Pro usado en la comparativa
 
 SB11_COLS_READ = [
     "estu_consecutivo",
     "punt_matematicas",          "punt_matematicas_norm",
     "punt_lectura_critica",      "punt_lectura_critica_norm",
+    "punt_lenguaje_norm",        # Lectura crítica en años 2010-2014
     "punt_sociales_ciudadanas",  "punt_sociales_ciudadanas_norm",
+    "punt_ciencias_sociales_norm",  # Sociales/Ciudadanas en años 2010-2013
     "punt_ingles",               "punt_ingles_norm",
     "punt_global",               "punt_global_norm",
     "desemp_ingles",
+]
+
+# Columnas SB11 cuyo nombre cambió entre años: (canónica, alterna antigua).
+# Tras el join se coalescen para que cada módulo tenga una sola columna.
+SB11_COALESCE = [
+    ("punt_lectura_critica_norm_sb11",     "punt_lenguaje_norm_sb11"),
+    ("punt_sociales_ciudadanas_norm_sb11", "punt_ciencias_sociales_norm_sb11"),
 ]
 
 SBPRO_PAREADO_COLS = [
@@ -235,10 +245,20 @@ def build_cache() -> pd.DataFrame:
     return df
 
 def _restore_signals():
+    """Devuelve los handlers SIGINT/SIGTERM a Python tras usar PySpark.
+    PySpark instala un handler que, una vez cerrado el SparkContext,
+    revienta con AttributeError al recibir Ctrl+C."""
     import signal
     try:
         signal.signal(signal.SIGINT, signal.default_int_handler)
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    except Exception:
+        pass
+    try:
+        from pyspark.core import context as _pyspark_ctx
+        def _noop_handler(signum, frame):
+            raise KeyboardInterrupt()
+        _pyspark_ctx.signal_handler = _noop_handler
     except Exception:
         pass
 
@@ -303,6 +323,8 @@ def _read_table_spark(spark, table: str, cols: list):
 def build_pareado_cache() -> pd.DataFrame:
     print("=" * 60)
     print("  Construyendo cache pareado SB11 ↔ SB Pro vía `llaves`…")
+    print(f"  (SB11 {SB11_YEARS[0]}-{SB11_YEARS[-1]} · "
+          f"SB Pro {YEARS_PAREADO[0]}-{YEARS_PAREADO[-1]})")
     print("  (union + join hechos en Spark — solo el resultado final pasa a pandas)")
     print("=" * 60)
     t0 = time.time()
@@ -336,7 +358,7 @@ def build_pareado_cache() -> pd.DataFrame:
 
         # SB Pro: union de todos los años en Spark, agregando 'anio'
         sbpro_sdfs = []
-        for y in YEARS:
+        for y in YEARS_PAREADO:
             print(f"  [SB Pro {y}] referenciando saberpro_{y}…")
             try:
                 sdf = _read_table_spark(spark, f"saberpro_{y}", SBPRO_PAREADO_COLS)
@@ -379,6 +401,17 @@ def build_pareado_cache() -> pd.DataFrame:
     for c in num_cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Coalescer columnas SB11 con nombre heterogéneo entre años: la canónica
+    # toma el valor de la alterna donde venga vacía, y la alterna se descarta.
+    for canon, alt in SB11_COALESCE:
+        if alt in df.columns:
+            if canon in df.columns:
+                df[canon] = df[canon].fillna(df[alt])
+            else:
+                df[canon] = df[alt]
+            df.drop(columns=[alt], inplace=True, errors="ignore")
+
     for c in df.select_dtypes(include="object").columns:
         df[c] = df[c].where(df[c].isna(), df[c].astype(str))
     for c in df.select_dtypes(include="float64").columns:
@@ -410,6 +443,9 @@ def load_or_build_pareado(force=False) -> pd.DataFrame:
         return pd.DataFrame()
 
 _DF_PAREADO = load_or_build_pareado(force="--rebuild" in sys.argv)
+
+# Asegura que Ctrl+C no toque ningún handler dejado por PySpark.
+_restore_signals()
 
 # ─────────────────────────────────────────────────────────────
 # HELPERS DE FIGURAS
@@ -554,7 +590,10 @@ def trend_paired_fig(df, sb11_col, sbpro_col,
     g = (d.groupby("anio")
            .agg(sb11=(sb11_col, "mean"), sbpro=(sbpro_col, "mean"))
            .sort_index())
-    if g.empty or g.dropna(how="all").empty: return empty_fig()
+    # Solo cohortes comparables en ambos lados (p. ej. el global SB11 no
+    # existe para 2010-2013, por lo que esos años de SB Pro quedan fuera).
+    g = g.dropna(subset=["sb11", "sbpro"])
+    if g.empty: return empty_fig()
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=g.index, y=g["sb11"], mode="lines+markers", name="SB 11",
