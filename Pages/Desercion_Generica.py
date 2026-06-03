@@ -34,6 +34,7 @@ import time
 from pathlib import Path
 import warnings
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from dash import html, dcc, Input, Output, callback
@@ -133,59 +134,6 @@ def bar_v_fig(index, values, colors=None, color=ACCENT2, xlab="", ylab=""):
     return fig
 
 
-def gauge_fig(value, title=""):
-    color = ACCENT2 if value < 20 else (ACCENT5 if value < 40 else ACCENT3)
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=value,
-        number={"suffix": "%", "font": {"color": color, "size": 36,
-                                         "family": "'IBM Plex Mono', monospace"}},
-        gauge={
-            "axis": {
-                "range": [0, 100],
-                "tickcolor": TEXT_MUTED,
-                "tickfont": {"color": TEXT_MUTED, "size": 10},
-            },
-            "bar": {"color": color, "thickness": 0.3},
-            "bgcolor": "rgba(0,0,0,0)",
-            "bordercolor": BORDER,
-            "steps": [
-                {"range": [0,  20], "color": "#162414"},
-                {"range": [20, 40], "color": "#1E1A0F"},
-                {"range": [40, 100], "color": "#1E0F0F"},
-            ],
-            "threshold": {
-                "line": {"color": ACCENT3, "width": 2},
-                "thickness": 0.75,
-                "value": value,
-            },
-        },
-        title={"text": title, "font": {"color": TEXT_MUTED, "size": 12,
-                                        "family": "'IBM Plex Mono', monospace"}},
-    ))
-    layout_gauge = {k: v for k, v in LAYOUT_BASE.items() if k != "margin"}
-    fig.update_layout(**layout_gauge, margin=dict(t=60, b=20, l=40, r=40))
-    return fig
-
-
-def donut_fig(continuaron, desertaron):
-    fig = go.Figure(go.Pie(
-        labels=["Continuaron a Saber Pro", "Desertaron"],
-        values=[continuaron, desertaron],
-        hole=0.55,
-        marker=dict(colors=[ACCENT2, ACCENT3], line=dict(color=BG, width=3)),
-        textfont=dict(size=11),
-        hovertemplate="%{label}<br>%{value:,} estudiantes<br>%{percent}<extra></extra>",
-    ))
-    fig.update_layout(
-        **LAYOUT_BASE,
-        showlegend=True,
-        legend=dict(font=dict(size=11, color=TEXT_MUTED),
-                    bgcolor="rgba(0,0,0,0)", bordercolor=BORDER, borderwidth=1),
-    )
-    return fig
-
-
 def pie_fig(index, values):
     if not len(index):
         return empty_fig()
@@ -232,34 +180,35 @@ def _parse_periodo(p, sb11_year: int):
         return None, None, None
 
 
-def _incert_stats(periodo_dist: dict, sb11_year: int):
-    """Calcula estadísticas de incertidumbre a partir del dict {periodo: count}.
-    Devuelve un dict con conteos y desviaciones, o None si no hay datos."""
-    if not periodo_dist:
-        return None
-
+def _incert_stats(pairs):
+    """Calcula estadísticas de incertidumbre agregando uno o varios cohortes.
+    `pairs` es una lista de (periodo_dist, sb11_year). Para una sola cohorte,
+    pasar [(periodo_dist, año)]. Devuelve dict con conteos/desviaciones o None."""
     total = 0
     early_count = 0;  ontime_count = 0;  late_count = 0
     w_dev_sum   = 0.0
     early_dev_sum = 0.0;  late_dev_sum = 0.0
 
-    for p, cnt in periodo_dist.items():
-        year, sem, delta_sems = _parse_periodo(p, sb11_year)
-        if year is None:
+    for periodo_dist, sb11_year in pairs:
+        if not periodo_dist:
             continue
-        dev        = delta_sems - STANDARD_SEMESTERS   # desviación en semestres
-        delta_yrs  = year - sb11_year
-        total     += cnt
-        w_dev_sum += dev * cnt
+        for p, cnt in periodo_dist.items():
+            year, sem, delta_sems = _parse_periodo(p, sb11_year)
+            if year is None:
+                continue
+            dev        = delta_sems - STANDARD_SEMESTERS   # desviación en semestres
+            delta_yrs  = year - sb11_year
+            total     += cnt
+            w_dev_sum += dev * cnt
 
-        if delta_yrs < STANDARD_YEARS:
-            early_count   += cnt
-            early_dev_sum += dev * cnt
-        elif delta_yrs == STANDARD_YEARS:
-            ontime_count  += cnt
-        else:
-            late_count    += cnt
-            late_dev_sum  += dev * cnt
+            if delta_yrs < STANDARD_YEARS:
+                early_count   += cnt
+                early_dev_sum += dev * cnt
+            elif delta_yrs == STANDARD_YEARS:
+                ontime_count  += cnt
+            else:
+                late_count    += cnt
+                late_dev_sum  += dev * cnt
 
     if total == 0:
         return None
@@ -308,40 +257,52 @@ def _fmt_sems(d_sems: float, short=False) -> str:
         return f"{' y '.join(parts) or '1 semestre'} {suffix}"
 
 
-def incert_anos_fig(periodo_dist: dict, sb11_year: int):
-    """Barras por año real de presentación SB Pro, coloreadas según delta vs estándar."""
-    if not periodo_dist:
-        return empty_fig("Sin datos de trayectoria para esta cohorte")
+def incert_anos_fig(pairs):
+    """Barras por año real de presentación SB Pro.
+    Una cohorte → colorea según delta vs su estándar y marca el año esperado.
+    Varias cohortes → suma por año calendario (color neutro, sin delta único)."""
+    single = len(pairs) == 1
 
     year_counts: dict = {}
-    for p, cnt in periodo_dist.items():
-        year, _, _ = _parse_periodo(p, sb11_year)
-        if year is not None:
-            year_counts[year] = year_counts.get(year, 0) + cnt
+    for periodo_dist, sb11_year in pairs:
+        if not periodo_dist:
+            continue
+        for p, cnt in periodo_dist.items():
+            yr, _, _ = _parse_periodo(p, sb11_year)
+            if yr is not None:
+                year_counts[yr] = year_counts.get(yr, 0) + cnt
 
     if not year_counts:
-        return empty_fig("Sin datos de trayectoria para esta cohorte")
+        return empty_fig("Sin datos de trayectoria")
 
-    expected  = sb11_year + STANDARD_YEARS
-    years     = sorted(year_counts.keys())
-    counts    = [year_counts[y] for y in years]
+    years   = sorted(year_counts.keys())
+    counts  = [year_counts[y] for y in years]
+    x_idx   = list(range(len(years)))
+    expected = None
 
-    def _color(y):
-        d = y - expected
-        if d < 0:  return ACCENT5          # antes del estándar: naranja
-        if d == 0: return ACCENT2          # en el estándar: verde
-        if d <= 2: return ACCENT3          # hasta 2 años tarde: rojo
-        return "#C23B22"                   # >2 años tarde: rojo oscuro
+    if single:
+        expected = pairs[0][1] + STANDARD_YEARS
 
-    def _xlabel(y):
-        d = y - expected
-        if d == 0: return f"{y}<br>✓ estándar"
-        if d < 0:  return f"{y}<br>{d} años"
-        return f"{y}<br>+{d} año{'s' if abs(d) > 1 else ''}"
+        def _color(y):
+            d = y - expected
+            if d < 0:  return ACCENT5          # antes del estándar: naranja
+            if d == 0: return ACCENT2          # en el estándar: verde
+            if d <= 2: return ACCENT3          # hasta 2 años tarde: rojo
+            return "#C23B22"                   # >2 años tarde: rojo oscuro
 
-    x_idx    = list(range(len(years)))
-    x_labels = [_xlabel(y) for y in years]
-    colors   = [_color(y)  for y in years]
+        def _xlabel(y):
+            d = y - expected
+            if d == 0: return f"{y}<br>✓ estándar"
+            if d < 0:  return f"{y}<br>{d} años"
+            return f"{y}<br>+{d} año{'s' if abs(d) > 1 else ''}"
+
+        colors     = [_color(y)  for y in years]
+        x_labels   = [_xlabel(y) for y in years]
+        customdata = [f"SB Pro {y} (delta: {y - expected:+d} años)" for y in years]
+    else:
+        colors     = ACCENT1
+        x_labels   = [str(y) for y in years]
+        customdata = [f"SB Pro {y}" for y in years]
 
     fig = go.Figure(go.Bar(
         x=x_idx, y=counts,
@@ -349,11 +310,11 @@ def incert_anos_fig(periodo_dist: dict, sb11_year: int):
         text=[f"{c:,}" for c in counts],
         textposition="outside",
         textfont=dict(size=10, color=TEXT_MUTED),
-        customdata=[f"SB Pro {y} (delta: {y - expected:+d} años)" for y in years],
+        customdata=customdata,
         hovertemplate="%{customdata}<br>Estudiantes: %{y:,}<extra></extra>",
     ))
 
-    if expected in years:
+    if single and expected in years:
         fig.add_vline(x=years.index(expected),
                       line=dict(color=ACCENT2, dash="dot", width=1.5))
 
@@ -364,27 +325,28 @@ def incert_anos_fig(periodo_dist: dict, sb11_year: int):
             tickmode="array", tickvals=x_idx, ticktext=x_labels,
             gridcolor="rgba(0,0,0,0)", tickfont=dict(size=10),
         ),
-        yaxis=dict(title="Estudiantes que continuaron", gridcolor=BORDER,
+        yaxis=dict(title="Estudiantes coincidentes", gridcolor=BORDER,
                    zerolinecolor=BORDER),
     )
     return fig
 
 
-def incert_desviacion_fig(periodo_dist: dict, sb11_year: int):
+def incert_desviacion_fig(pairs):
     """Barras de desviación en semestres respecto al estándar (10 semestres = 5 años).
-    Negativo = llegaron antes; 0 = exactamente en el estándar; positivo = llegaron después."""
-    if not periodo_dist:
-        return empty_fig("Sin datos de trayectoria para esta cohorte")
-
+    Negativo = llegaron antes; 0 = exactamente en el estándar; positivo = llegaron después.
+    Agrega uno o varios cohortes (la desviación ya está normalizada por cohorte)."""
     sem_counts: dict = {}
-    for p, cnt in periodo_dist.items():
-        _, _, delta_sems = _parse_periodo(p, sb11_year)
-        if delta_sems is not None:
-            dev = delta_sems - STANDARD_SEMESTERS
-            sem_counts[dev] = sem_counts.get(dev, 0) + cnt
+    for periodo_dist, sb11_year in pairs:
+        if not periodo_dist:
+            continue
+        for p, cnt in periodo_dist.items():
+            _, _, delta_sems = _parse_periodo(p, sb11_year)
+            if delta_sems is not None:
+                dev = delta_sems - STANDARD_SEMESTERS
+                sem_counts[dev] = sem_counts.get(dev, 0) + cnt
 
     if not sem_counts:
-        return empty_fig("Sin datos de trayectoria para esta cohorte")
+        return empty_fig("Sin datos de trayectoria")
 
     devs   = sorted(sem_counts.keys())
     counts = [sem_counts[d] for d in devs]
@@ -424,7 +386,7 @@ def incert_desviacion_fig(periodo_dist: dict, sb11_year: int):
             tickmode="array", tickvals=devs, ticktext=labels,
             gridcolor="rgba(0,0,0,0)", tickfont=dict(size=9),
         ),
-        yaxis=dict(title="Estudiantes que continuaron", gridcolor=BORDER,
+        yaxis=dict(title="Estudiantes coincidentes", gridcolor=BORDER,
                    zerolinecolor=BORDER),
         shapes=[dict(
             type="rect", xref="x", yref="paper",
@@ -641,53 +603,83 @@ _META, _DF_DES = load_or_build(force="--rebuild" in sys.argv)
 # GRÁFICOS DE RESUMEN (estáticos — todas las cohortes)
 # ─────────────────────────────────────────────────────────────
 
+def _trendline(years, values):
+    """Devuelve los valores de la recta de regresión lineal sobre la serie."""
+    if len(years) < 2:
+        return None
+    xs   = np.array(years, dtype=float)
+    coef = np.polyfit(xs, np.array(values, dtype=float), 1)
+    return coef[0], (coef[0] * xs + coef[1]).tolist()   # (pendiente pp/año, recta)
+
+
+def _global_trend():
+    """Tendencia global de la tasa de no coincidencia a lo largo de las cohortes."""
+    if not _META or len(_META) < 2:
+        return None
+    years = sorted(_META.keys())
+    tasas = [_META[y]["tasa_desercion"] for y in years]
+    slope, _ = _trendline(years, tasas)
+    return {
+        "slope":       slope,                  # puntos porcentuales por año
+        "first_year":  years[0],
+        "last_year":   years[-1],
+        "delta_total": tasas[-1] - tasas[0],
+    }
+
+
 def _overview_figs():
     if not _META:
         return empty_fig("Sin datos"), empty_fig("Sin datos")
 
-    years      = sorted(_META.keys())
-    tasas      = [_META[y]["tasa_desercion"] for y in years]
-    continuaron = [_META[y]["continuaron"]   for y in years]
-    desertores  = [_META[y]["desertores"]    for y in years]
+    years       = sorted(_META.keys())
+    tasas       = [_META[y]["tasa_desercion"] for y in years]   # tasa de no coincidencia
+    continuaron = [_META[y]["continuaron"]    for y in years]
+    desertores  = [_META[y]["desertores"]     for y in years]
 
-    # Tasa de deserción por cohorte (colores verde→rojo)
-    colors_tasa = [
-        f"hsl({int(120 - 120 * t / 100)}, 70%, 55%)" for t in tasas
-    ]
-    fig_tasa = go.Figure(go.Bar(
+    # ── Gráfico 1: línea de tasa de no coincidencia + tendencia ──
+    fig_tasa = go.Figure()
+    fig_tasa.add_trace(go.Scatter(
         x=[str(y) for y in years], y=tasas,
-        marker=dict(color=colors_tasa, line=dict(color="rgba(0,0,0,0)")),
-        text=[f"{t:.1f}%" for t in tasas],
-        textposition="outside",
-        textfont=dict(size=10, color=TEXT_MUTED),
-        hovertemplate="Cohorte %{x}<br>Tasa: %{y:.2f}%<extra></extra>",
+        mode="lines+markers",
+        line=dict(color=ACCENT3, width=2.5),
+        marker=dict(size=8, color=ACCENT3),
+        hovertemplate="Cohorte %{x}<br>No coincidencia: %{y:.2f}%<extra></extra>",
     ))
+    tl = _trendline(years, tasas)
+    if tl:
+        fig_tasa.add_trace(go.Scatter(
+            x=[str(y) for y in years], y=tl[1],
+            mode="lines", line=dict(color=TEXT_MUTED, width=1.5, dash="dot"),
+            hoverinfo="skip",
+        ))
     fig_tasa.update_layout(
-        **LAYOUT_BASE,
+        **LAYOUT_BASE, showlegend=False,
         xaxis=dict(title="Cohorte (año Saber 11)", gridcolor="rgba(0,0,0,0)"),
-        yaxis=dict(title="Tasa de deserción (%)", gridcolor=BORDER,
+        yaxis=dict(title="Tasa de no coincidencia (%)", gridcolor=BORDER,
                    zerolinecolor=BORDER, range=[0, max(tasas) * 1.15 if tasas else 100]),
     )
 
-    # Composición: continuaron vs desertaron (barras apiladas)
+    # ── Gráfico 2: área apilada al 100% coincidentes vs no coincidentes ──
     fig_comp = go.Figure()
-    fig_comp.add_trace(go.Bar(
-        name="Continuaron a Saber Pro",
+    fig_comp.add_trace(go.Scatter(
+        name="Coincidentes",
         x=[str(y) for y in years], y=continuaron,
-        marker=dict(color=ACCENT2),
-        hovertemplate="Cohorte %{x}<br>Continuaron: %{y:,}<extra></extra>",
+        mode="lines", stackgroup="one", groupnorm="percent",
+        line=dict(width=0.5, color=ACCENT2), fillcolor=ACCENT2,
+        hovertemplate="Cohorte %{x}<br>Coincidentes: %{y:.1f}%<extra></extra>",
     ))
-    fig_comp.add_trace(go.Bar(
-        name="Desertaron",
+    fig_comp.add_trace(go.Scatter(
+        name="No coincidentes",
         x=[str(y) for y in years], y=desertores,
-        marker=dict(color=ACCENT3),
-        hovertemplate="Cohorte %{x}<br>Desertaron: %{y:,}<extra></extra>",
+        mode="lines", stackgroup="one",
+        line=dict(width=0.5, color=ACCENT3), fillcolor=ACCENT3,
+        hovertemplate="Cohorte %{x}<br>No coincidentes: %{y:.1f}%<extra></extra>",
     ))
     fig_comp.update_layout(
         **LAYOUT_BASE,
-        barmode="stack",
         xaxis=dict(title="Cohorte (año Saber 11)", gridcolor="rgba(0,0,0,0)"),
-        yaxis=dict(title="Estudiantes", gridcolor=BORDER, zerolinecolor=BORDER),
+        yaxis=dict(title="Proporción (%)", gridcolor=BORDER, zerolinecolor=BORDER,
+                   range=[0, 100]),
         legend=dict(
             font=dict(color=TEXT_MAIN, size=10),
             bgcolor="rgba(0,0,0,0)",
@@ -697,7 +689,112 @@ def _overview_figs():
     return fig_tasa, fig_comp
 
 
+def trend_line_fig(selected_year):
+    """Evolución de la tasa de no coincidencia por cohorte, con la cohorte
+    seleccionada resaltada y línea de tendencia."""
+    if not _META:
+        return empty_fig("Sin datos")
+    years = sorted(_META.keys())
+    tasas = [_META[y]["tasa_desercion"] for y in years]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=[str(y) for y in years], y=tasas,
+        mode="lines+markers",
+        line=dict(color=ACCENT1, width=2.5),
+        marker=dict(size=7, color=ACCENT1),
+        hovertemplate="Cohorte %{x}<br>No coincidencia: %{y:.2f}%<extra></extra>",
+    ))
+    tl = _trendline(years, tasas)
+    if tl:
+        fig.add_trace(go.Scatter(
+            x=[str(y) for y in years], y=tl[1],
+            mode="lines", line=dict(color=TEXT_MUTED, width=1.5, dash="dot"),
+            hoverinfo="skip",
+        ))
+    if selected_year in _META:
+        sy_tasa = _META[selected_year]["tasa_desercion"]
+        fig.add_trace(go.Scatter(
+            x=[str(selected_year)], y=[sy_tasa],
+            mode="markers+text",
+            marker=dict(size=16, color=ACCENT5, line=dict(color=BG, width=2)),
+            text=[f"{sy_tasa:.1f}%"], textposition="top center",
+            textfont=dict(color=ACCENT5, size=11),
+            hovertemplate=f"Cohorte {selected_year}<br>%{{y:.2f}}%<extra></extra>",
+        ))
+    fig.update_layout(
+        **LAYOUT_BASE, showlegend=False,
+        xaxis=dict(title="Cohorte (año Saber 11)", gridcolor="rgba(0,0,0,0)"),
+        yaxis=dict(title="Tasa de no coincidencia (%)", gridcolor=BORDER,
+                   zerolinecolor=BORDER, range=[0, max(tasas) * 1.2 if tasas else 100]),
+    )
+    return fig
+
+
+def trend_delta_fig(selected_year):
+    """Variación interanual de la tasa de no coincidencia (Δ pp vs cohorte previa)."""
+    if not _META or len(_META) < 2:
+        return empty_fig("Serie insuficiente para variación interanual")
+    years = sorted(_META.keys())
+    tasas = {y: _META[y]["tasa_desercion"] for y in years}
+
+    dyears = years[1:]
+    deltas = [round(tasas[cur] - tasas[prev], 3) for prev, cur in zip(years[:-1], years[1:])]
+    # sube = más no coincidencia = peor = rojo · baja = mejor = verde
+    colors      = [ACCENT3 if d > 0 else ACCENT2 for d in deltas]
+    # contorno para resaltar la cohorte seleccionada
+    line_colors = [TEXT_MAIN if y == selected_year else "rgba(0,0,0,0)" for y in dyears]
+    # texto del hover pre-formateado a 3 decimales (Plotly ignora %{y:+.3f} con el flag +)
+    hover_txt   = [f"{d:+.3f}" for d in deltas]
+
+    fig = go.Figure(go.Bar(
+        x=[str(y) for y in dyears], y=deltas,
+        marker=dict(color=colors, line=dict(color=line_colors, width=2)),
+        text=[f"{d:+.1f}" for d in deltas],
+        textposition="outside", textfont=dict(size=10, color=TEXT_MUTED),
+        customdata=hover_txt,
+        hovertemplate="Cohorte %{x}<br>Δ vs previa: %{customdata} pp<extra></extra>",
+    ))
+    fig.add_hline(y=0, line=dict(color=BORDER, width=1))
+    fig.update_layout(
+        **LAYOUT_BASE,
+        xaxis=dict(title="Cohorte (año Saber 11)", gridcolor="rgba(0,0,0,0)"),
+        yaxis=dict(title="Δ tasa vs cohorte previa (pp)", gridcolor=BORDER,
+                   zerolinecolor=BORDER),
+    )
+    return fig
+
+
 _FIG_TASA_OV, _FIG_COMP_OV = _overview_figs()
+_TREND                     = _global_trend()
+
+# ─────────────────────────────────────────────────────────────
+# AGREGACIÓN "TODAS LAS COHORTES"
+# ─────────────────────────────────────────────────────────────
+ALL_VALUE = "ALL"   # valor del filtro para "Todas las cohortes"
+
+
+def _all_totals():
+    """Totales agregados de todas las cohortes (para el filtro 'Todas')."""
+    if not _META:
+        return None
+    total = sum(m["total"]       for m in _META.values())
+    cont  = sum(m["continuaron"] for m in _META.values())
+    des   = sum(m["desertores"]  for m in _META.values())
+    return {
+        "total":           total,
+        "continuaron":     cont,
+        "desertores":      des,
+        "tasa_transicion": round(cont / total * 100, 2) if total else 0.0,
+    }
+
+
+def _all_pairs():
+    """Lista de (periodo_dist, sb11_year) de todas las cohortes."""
+    return [(m.get("periodo_dist", {}), y) for y, m in _META.items()]
+
+
+_ALL_TOTALS = _all_totals()
 
 # ─────────────────────────────────────────────────────────────
 # UI HELPERS
@@ -722,8 +819,15 @@ def section_title(text):
     })
 
 
-def kpi_box(label, value, color=ACCENT1, subtitle=None):
-    children = [
+def kpi_box(label, value, color=ACCENT1, subtitle=None, general=False):
+    children = []
+    if general:
+        children.append(
+            html.Div("◆ GENERAL · TODAS LAS COHORTES", style={
+                "color": ACCENT4, "fontSize": "9px", "letterSpacing": "2px",
+                "fontWeight": "700", "marginBottom": "8px"})
+        )
+    children += [
         html.Div(label, style={"color": TEXT_MUTED, "fontSize": "10px",
                                "letterSpacing": "1.5px", "textTransform": "uppercase"}),
         html.Div(value, style={"color": color, "fontSize": "28px",
@@ -735,11 +839,17 @@ def kpi_box(label, value, color=ACCENT1, subtitle=None):
             html.Div(subtitle, style={"color": TEXT_MUTED, "fontSize": "10px",
                                      "marginTop": "4px"})
         )
-    return html.Div(children, style={
+    style = {
         "background": BG, "border": f"1px solid {BORDER}", "borderRadius": "8px",
         "padding": "18px 22px", "textAlign": "center", "flex": "1",
         "minWidth": "160px", "fontFamily": "'IBM Plex Mono', monospace",
-    })
+    }
+    if general:
+        style.update({
+            "border": f"1px dashed {ACCENT4}",
+            "background": "rgba(210, 168, 255, 0.05)",
+        })
+    return html.Div(children, style=style)
 
 
 def g(gid, height="300px"):
@@ -759,7 +869,8 @@ def col(children, flex="1", min_width="280px"):
 # LAYOUT
 # ─────────────────────────────────────────────────────────────
 
-YEAR_OPTS     = [{"label": str(y), "value": y} for y in sorted(_META.keys())]
+YEAR_OPTS     = ([{"label": "Todas las cohortes", "value": ALL_VALUE}]
+                 + [{"label": str(y), "value": y} for y in sorted(_META.keys())])
 _DEFAULT_YEAR = sorted(_META.keys())[0] if _META else None
 
 layout = html.Div(style={
@@ -784,12 +895,24 @@ layout = html.Div(style={
             ),
         ]),
         html.Div([
-            html.Div("COHORTES ANALIZADAS", style={
-                "color": TEXT_MUTED, "fontSize": "10px", "letterSpacing": "2px"}),
-            html.Div(str(len(_META)), style={
-                "color": ACCENT4, "fontSize": "42px", "fontWeight": "700",
-                "letterSpacing": "-1px"}),
-        ], style={"textAlign": "right"}),
+            html.Div([
+                html.Div("COHORTES ANALIZADAS", style={
+                    "color": TEXT_MUTED, "fontSize": "10px", "letterSpacing": "2px"}),
+                html.Div(str(len(_META)), style={
+                    "color": ACCENT4, "fontSize": "42px", "fontWeight": "700",
+                    "letterSpacing": "-1px", "lineHeight": "1"}),
+            ], style={"textAlign": "right"}),
+            html.Div([
+                html.Div("DATOS ANALIZADOS", style={
+                    "color": TEXT_MUTED, "fontSize": "10px", "letterSpacing": "2px"}),
+                html.Div(id="des-header-count", style={
+                    "color": ACCENT1, "fontSize": "42px", "fontWeight": "700",
+                    "letterSpacing": "-1px", "lineHeight": "1"}),
+                html.Div(id="des-header-scope", style={
+                    "color": TEXT_MUTED, "fontSize": "10px", "letterSpacing": "1px",
+                    "marginTop": "2px"}),
+            ], style={"textAlign": "right"}),
+        ], style={"display": "flex", "gap": "40px", "alignItems": "flex-start"}),
     ], style={
         "display": "flex", "justifyContent": "space-between", "alignItems": "flex-end",
         "marginBottom": "28px", "paddingBottom": "20px",
@@ -801,14 +924,14 @@ layout = html.Div(style={
         section_title("Resumen general · todas las cohortes"),
         row(
             col([
-                html.Div("Tasa de deserción por cohorte",
+                html.Div("Tendencia de la tasa de no coincidencia por cohorte",
                          style={"color": TEXT_MUTED, "fontSize": "11px",
                                 "marginBottom": "8px"}),
                 dcc.Graph(figure=_FIG_TASA_OV, config={"displayModeBar": False},
                           style={"height": "300px"}),
             ]),
             col([
-                html.Div("Composición: continuaron vs desertaron",
+                html.Div("Proporción: coincidentes vs no coincidentes",
                          style={"color": TEXT_MUTED, "fontSize": "11px",
                                 "marginBottom": "8px"}),
                 dcc.Graph(figure=_FIG_COMP_OV, config={"displayModeBar": False},
@@ -836,32 +959,34 @@ layout = html.Div(style={
         html.Div(id="des-kpi-row"),
     ]),
 
-    # ── Gauge + Donut ────────────────────────────────────────────
+    # ── Tendencia (línea evolución + variación interanual) ───────
     card([
-        section_title("Visualización de la deserción"),
+        section_title("Tendencia de la falta de coincidencia"),
         row(
             col([
-                html.Div("Tasa de deserción", style={
-                    "color": TEXT_MUTED, "fontSize": "11px", "marginBottom": "8px"}),
-                g("des-fig-gauge", "320px"),
+                html.Div("Evolución de la tasa de no coincidencia (cohorte resaltada)",
+                         style={"color": TEXT_MUTED, "fontSize": "11px",
+                                "marginBottom": "8px"}),
+                g("des-fig-trend-line", "320px"),
             ]),
             col([
-                html.Div("Distribución: continuaron vs desertaron", style={
-                    "color": TEXT_MUTED, "fontSize": "11px", "marginBottom": "8px"}),
-                g("des-fig-donut", "320px"),
+                html.Div("Variación interanual (Δ pp vs cohorte previa)",
+                         style={"color": TEXT_MUTED, "fontSize": "11px",
+                                "marginBottom": "8px"}),
+                g("des-fig-trend-delta", "320px"),
             ]),
         ),
     ]),
 
     # ── Desertores por estrato ───────────────────────────────────
     card([
-        section_title("Desertores por estrato socioeconómico"),
+        section_title("Falta de coincidencias por estrato socioeconómico"),
         g("des-fig-estrato", "340px"),
     ]),
 
     # ── Naturaleza + zona ────────────────────────────────────────
     card([
-        section_title("Perfil de desertores por tipo y zona de colegio"),
+        section_title("Falta de coincidencias por tipo y zona de colegio"),
         row(
             col([
                 html.Div("Naturaleza del colegio", style={
@@ -878,7 +1003,7 @@ layout = html.Div(style={
 
     # ── Top 10 departamentos ─────────────────────────────────────
     card([
-        section_title("Top 10 departamentos con mayor deserción"),
+        section_title("Top 10 departamentos con mayor falta de coincidencias"),
         g("des-fig-depto", "360px"),
     ]),
 
@@ -914,24 +1039,50 @@ layout = html.Div(style={
         section_title("Nota metodológica"),
         html.Div([
             html.Div([
+                html.Span("Nota sobre el concepto  ", style={"color": ACCENT5}),
+                html.Span("→  no se mide deserción directamente. Solo se observa si existe o no "
+                          "coincidencia de llave entre Saber 11 y Saber Pro; la ausencia de "
+                          "coincidencia no confirma deserción (puede ser cambio de identificador, "
+                          "presentación fuera del rango 2015–2023, etc.).",
+                          style={"color": TEXT_MAIN}),
+            ], style={"marginBottom": "12px"}),
+            html.Div([
                 html.Span("Total cohorte  ", style={"color": TEXT_MUTED}),
-                html.Span("→  número de filas en saber11_{año} para el cohorte seleccionado.",
+                html.Span("→  número de filas en saber11_{año} para la cohorte seleccionada.",
                           style={"color": TEXT_MAIN}),
             ], style={"marginBottom": "8px"}),
             html.Div([
-                html.Span("Continuaron  ", style={"color": TEXT_MUTED}),
+                html.Span("Coincidentes  ", style={"color": TEXT_MUTED}),
                 html.Span("→  estudiantes con coincidencia en llaves.estu_consecutivo_sb11 "
-                          "(llegaron a Saber Pro 2015–2023).",
+                          "(aparecen en Saber Pro 2015–2023).",
                           style={"color": TEXT_MAIN}),
             ], style={"marginBottom": "8px"}),
             html.Div([
-                html.Span("Desertores  ", style={"color": TEXT_MUTED}),
-                html.Span("→  Total cohorte − Continuaron (sin llave → no llegaron a Saber Pro).",
+                html.Span("No coincidentes  ", style={"color": TEXT_MUTED}),
+                html.Span("→  Total cohorte − Coincidentes (sin llave coincidente en Saber Pro).",
                           style={"color": TEXT_MAIN}),
             ], style={"marginBottom": "8px"}),
             html.Div([
-                html.Span("Tasa de deserción  ", style={"color": TEXT_MUTED}),
-                html.Span("→  (Desertores / Total cohorte) × 100.",
+                html.Span("Tasa de no coincidencia  ", style={"color": TEXT_MUTED}),
+                html.Span("→  (No coincidentes / Total cohorte) × 100.",
+                          style={"color": TEXT_MAIN}),
+            ], style={"marginBottom": "8px"}),
+            html.Div([
+                html.Span("Tasa de transición  ", style={"color": TEXT_MUTED}),
+                html.Span("→  (Coincidentes / Total cohorte) × 100  ·  complemento de la anterior.",
+                          style={"color": TEXT_MAIN}),
+            ], style={"marginBottom": "8px"}),
+            html.Div([
+                html.Span("Tendencia (pp/año)  ", style={"color": TEXT_MUTED}),
+                html.Span("→  pendiente de la regresión lineal de la tasa de no coincidencia "
+                          "sobre todas las cohortes 2010–2018. Positiva = la no coincidencia crece "
+                          "año a año. Indicador global, no depende de la cohorte seleccionada.",
+                          style={"color": TEXT_MAIN}),
+            ], style={"marginBottom": "8px"}),
+            html.Div([
+                html.Span("Variación interanual (Δ pp)  ", style={"color": TEXT_MUTED}),
+                html.Span("→  tasa de no coincidencia de la cohorte menos la de la cohorte previa, "
+                          "en puntos porcentuales.",
                           style={"color": TEXT_MAIN}),
             ], style={"marginBottom": "8px"}),
             html.Div([
@@ -983,8 +1134,8 @@ layout = html.Div(style={
 
 @callback(
     Output("des-kpi-row",          "children"),
-    Output("des-fig-gauge",        "figure"),
-    Output("des-fig-donut",        "figure"),
+    Output("des-fig-trend-line",   "figure"),
+    Output("des-fig-trend-delta",  "figure"),
     Output("des-fig-estrato",      "figure"),
     Output("des-fig-naturaleza",   "figure"),
     Output("des-fig-area",         "figure"),
@@ -992,6 +1143,8 @@ layout = html.Div(style={
     Output("des-incert-kpi-row",   "children"),
     Output("des-fig-incert-anos",  "figure"),
     Output("des-fig-incert-desv",  "figure"),
+    Output("des-header-count",     "children"),
+    Output("des-header-scope",     "children"),
     Input("des-f-cohorte",         "value"),
 )
 def update_cohorte(year):
@@ -1007,81 +1160,128 @@ def update_cohorte(year):
         empty_fig(), empty_fig(),
         empty_fig(), empty_fig(), empty_fig(), empty_fig(),
         *_empty_incert,
+        "—", "",
     )
 
-    if year is None or year not in _META:
+    is_all = (year == ALL_VALUE)
+    if year is None or (not is_all and year not in _META):
         return _no_data
 
-    m           = _META[year]
-    total       = m["total"]
-    continuaron = m["continuaron"]
-    desertores  = m["desertores"]
-    tasa_d      = m["tasa_desercion"]
-    tasa_t      = m["tasa_transicion"]
-    tasa_color  = ACCENT2 if tasa_d < 20 else (ACCENT5 if tasa_d < 40 else ACCENT3)
+    # ── Totales según el filtro (cohorte única o todas) ─────────
+    if is_all:
+        agg          = _ALL_TOTALS
+        total        = agg["total"]
+        continuaron  = agg["continuaron"]
+        desertores   = agg["desertores"]
+        tasa_t       = agg["tasa_transicion"]
+        total_sub    = "Todas · 2010–2018"
+        sel_year     = None                     # sin cohorte resaltada
+        header_scope = "Todas · 2010–2018"
+    else:
+        m            = _META[year]
+        total        = m["total"]
+        continuaron  = m["continuaron"]
+        desertores   = m["desertores"]
+        tasa_t       = m["tasa_transicion"]
+        total_sub    = f"Cohorte {year}"
+        sel_year     = year
+        header_scope = f"Cohorte {year}"
 
-    kpis = row(
-        kpi_box("Presentaron Saber 11", f"{total:,}",       ACCENT1, f"Cohorte {year}"),
-        kpi_box("Desertaron",           f"{desertores:,}",  ACCENT3, "Sin llave en Saber Pro"),
-        kpi_box("Continuaron",          f"{continuaron:,}", ACCENT2, "Con llave en Saber Pro"),
-        kpi_box("Tasa de deserción",    f"{tasa_d:.2f}%",   tasa_color, "Desertores / Total cohorte"),
-        kpi_box("Tasa de transición",   f"{tasa_t:.2f}%",   ACCENT2,    "Continuaron / Total cohorte"),
-    )
+    header_count = f"{total:,}"
 
-    fig_gauge = gauge_fig(tasa_d, "Tasa de deserción")
-    fig_donut = donut_fig(continuaron, desertores)
+    # KPI de tendencia global (independiente del filtro)
+    if _TREND:
+        slope = _TREND["slope"]
+        if slope > 0.05:
+            arrow, tcolor = "↗", ACCENT3      # la no coincidencia crece
+        elif slope < -0.05:
+            arrow, tcolor = "↘", ACCENT2      # decrece
+        else:
+            arrow, tcolor = "→", ACCENT5
+        trend_val = f"{arrow} {slope:+.2f} pp/año"
+        trend_sub = (f"{_TREND['first_year']}→{_TREND['last_year']} · "
+                     f"{_TREND['delta_total']:+.1f} pp en total")
+    else:
+        trend_val, tcolor, trend_sub = "—", TEXT_MUTED, "Serie insuficiente"
+
+    kpis = html.Div([
+        # KPIs del filtro seleccionado
+        row(
+            kpi_box("Presentaron Saber 11", f"{total:,}",       ACCENT1, total_sub),
+            kpi_box("No coincidentes",      f"{desertores:,}",  ACCENT3, "Sin llave en Saber Pro"),
+            kpi_box("Coincidentes",         f"{continuaron:,}", ACCENT2, "Con llave en Saber Pro"),
+            kpi_box("Tasa de transición",   f"{tasa_t:.2f}%",   ACCENT2, "Coincidentes / Total"),
+        ),
+        # Indicador general (no depende del filtro)
+        html.Div(
+            "Indicador general — no depende del filtro seleccionado",
+            style={"color": TEXT_MUTED, "fontSize": "10px", "letterSpacing": "1.5px",
+                   "textTransform": "uppercase", "marginTop": "20px", "marginBottom": "10px",
+                   "paddingTop": "16px", "borderTop": f"1px dashed {BORDER}"},
+        ),
+        row(
+            kpi_box("Tendencia", trend_val, tcolor, trend_sub, general=True),
+        ),
+    ])
+
+    fig_trend_line  = trend_line_fig(sel_year)
+    fig_trend_delta = trend_delta_fig(sel_year)
 
     if _DF_DES.empty or "anio_cohorte" not in _DF_DES.columns:
-        return (kpis, fig_gauge, fig_donut,
+        return (kpis, fig_trend_line, fig_trend_delta,
                 empty_fig(), empty_fig(), empty_fig(), empty_fig(),
-                *_empty_incert)
+                *_empty_incert, header_count, header_scope)
 
-    d = _DF_DES[_DF_DES["anio_cohorte"] == year]
+    d = _DF_DES if is_all else _DF_DES[_DF_DES["anio_cohorte"] == year]
 
     # Estrato socioeconómico
     if "fami_estratovivienda" in d.columns:
-        vc = d["fami_estratovivienda"].fillna("No reporta").value_counts().sort_index()
+        estr = d["fami_estratovivienda"].fillna("No reporta").astype(str).str.strip()
+        # 'Sin Estrato' se agrupa dentro de 'No reporta'
+        estr = estr.mask(estr.str.lower() == "sin estrato", "No reporta")
+        vc = estr.value_counts().sort_index()
         n  = len(vc)
         colors = [f"hsl({int(10 + 200 * i / max(n - 1, 1))}, 70%, 55%)" for i in range(n)]
         fig_estrato = bar_v_fig(list(vc.index), list(vc.values),
-                                colors=colors, xlab="Estrato", ylab="Desertores")
+                                colors=colors, xlab="Estrato", ylab="No coincidentes")
     else:
-        fig_estrato = empty_fig("Columna 'fami_estratovivienda' no disponible en esta cohorte")
+        fig_estrato = empty_fig("Columna 'fami_estratovivienda' no disponible")
 
     # Naturaleza del colegio
     if "cole_naturaleza" in d.columns:
         vc = d["cole_naturaleza"].fillna("No reporta").value_counts()
         fig_naturaleza = pie_fig(list(vc.index), list(vc.values))
     else:
-        fig_naturaleza = empty_fig("Columna 'cole_naturaleza' no disponible en esta cohorte")
+        fig_naturaleza = empty_fig("Columna 'cole_naturaleza' no disponible")
 
     # Zona / área del colegio
     if "cole_area_ubicacion" in d.columns:
         vc = d["cole_area_ubicacion"].fillna("No reporta").value_counts()
         fig_area = pie_fig(list(vc.index), list(vc.values))
     else:
-        fig_area = empty_fig("Columna 'cole_area_ubicacion' no disponible en esta cohorte")
+        fig_area = empty_fig("Columna 'cole_area_ubicacion' no disponible")
 
     # Top 10 departamentos
     if "estu_depto_presentacion" in d.columns:
         vc = d["estu_depto_presentacion"].fillna("No reporta").value_counts().head(10)
         fig_depto = bar_v_fig(list(vc.index), list(vc.values),
-                              color=ACCENT5, xlab="Departamento", ylab="Desertores")
+                              color=ACCENT5, xlab="Departamento", ylab="No coincidentes")
     else:
-        fig_depto = empty_fig("Columna 'estu_depto_presentacion' no disponible en esta cohorte")
+        fig_depto = empty_fig("Columna 'estu_depto_presentacion' no disponible")
 
     # ── Radio de incertidumbre ──────────────────────────────────
-    periodo_dist = m.get("periodo_dist", {})
-    stats        = _incert_stats(periodo_dist, year)
-    expected_yr  = year + STANDARD_YEARS
+    pairs = _all_pairs() if is_all else [(m.get("periodo_dist", {}), year)]
+    stats = _incert_stats(pairs)
 
     if stats:
+        ontime_sub = (f"{stats['ontime_pct']:.1f}% · 5 años exactos" if is_all
+                      else f"{stats['ontime_pct']:.1f}% · SB Pro en {year + STANDARD_YEARS}")
         incert_kpis = row(
             kpi_box(
                 "A tiempo (5 años exactos)",
                 f"{stats['ontime_count']:,}",
                 ACCENT2,
-                f"{stats['ontime_pct']:.1f}% · SB Pro en {expected_yr}",
+                ontime_sub,
             ),
             kpi_box(
                 "Antes del estándar",
@@ -1109,9 +1309,10 @@ def update_cohorte(year):
                    "fontSize": "12px"},
         )
 
-    fig_incert_anos = incert_anos_fig(periodo_dist, year)
-    fig_incert_desv = incert_desviacion_fig(periodo_dist, year)
+    fig_incert_anos = incert_anos_fig(pairs)
+    fig_incert_desv = incert_desviacion_fig(pairs)
 
-    return (kpis, fig_gauge, fig_donut,
+    return (kpis, fig_trend_line, fig_trend_delta,
             fig_estrato, fig_naturaleza, fig_area, fig_depto,
-            incert_kpis, fig_incert_anos, fig_incert_desv)
+            incert_kpis, fig_incert_anos, fig_incert_desv,
+            header_count, header_scope)
