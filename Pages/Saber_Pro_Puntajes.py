@@ -60,6 +60,7 @@ COLS_READ = [
     "estu_depto_reside", "estu_mcpio_reside",
     "fami_estratovivienda",
     "inst_nombre_institucion",
+    "inst_origen",
     "gruporeferencia",
     "estu_pagomatriculabeca", "estu_pagomatriculacredito",
     "estu_pagomatriculapadres", "estu_pagomatriculapropio",
@@ -107,6 +108,7 @@ SBPRO_PAREADO_COLS = [
     "periodo", "estu_genero", "fami_estratovivienda",
     "estu_depto_reside", "estu_mcpio_reside",
     "inst_nombre_institucion",
+    "inst_origen",
     "gruporeferencia",
     "estu_pagomatriculabeca", "estu_pagomatriculacredito",
     "estu_pagomatriculapadres", "estu_pagomatriculapropio",
@@ -719,6 +721,17 @@ PAGO_COLS = [
 ]
 PAGO_OPTS = [{"label": lab, "value": col} for lab, col in PAGO_COLS]
 
+# Clasificación de instituciones por `inst_origen` (con/sin tilde para cubrir
+# ambas variantes presentes en la base de datos).
+ORIGEN_GROUPS = {
+    "Pública":          {"OFICIAL DEPARTAMENTAL", "OFICIAL MUNICIPAL",
+                         "OFICIAL NACIONAL"},
+    "Privada":          {"NO OFICIAL - FUNDACIÓN", "NO OFICIAL - CORPORACIÓN",
+                         "NO OFICIAL - FUNDACION", "NO OFICIAL - CORPORACION"},
+    "Régimen especial": {"REGIMEN ESPECIAL"},
+}
+ORIGEN_OPTS = [{"label": k, "value": k} for k in ORIGEN_GROUPS]
+
 _TRUTHY = {"1", "1.0", "true", "t", "yes", "y", "si", "sí", "s"}
 
 def _is_truthy(series: pd.Series) -> pd.Series:
@@ -763,8 +776,9 @@ def _filter_bar():
                     inputStyle={"marginRight": "6px"}),
             ], style={"flex": "1", "minWidth": "240px"}),
             dd("punt-f-sede", "Sede USB", USB_SEDE_OPTS, value=None),
-            dd("punt-f-grupo", "Grupo de referencia", GRUPO_OPTS, value=None),
-            dd("punt-f-pago",  "Pago de matrícula",   PAGO_OPTS,  value=None),
+            dd("punt-f-grupo",  "Grupo de referencia", GRUPO_OPTS,  value=None),
+            dd("punt-f-pago",   "Pago de matrícula",   PAGO_OPTS,   value=None),
+            dd("punt-f-origen", "Tipo de institución", ORIGEN_OPTS, value=None),
         ),
         html.Div(id="punt-filter-summary",
                  style={"color": TEXT_MUTED, "fontSize": "11px",
@@ -954,7 +968,7 @@ def _update_mcpio_options(depto, mcpio):
 
 
 def _apply_filters(df, anio, periodo, genero, estrato, depto, mcpio,
-                   usb_only=False, sede=None, grupo=None, pago=None):
+                   usb_only=False, sede=None, grupo=None, pago=None, origen=None):
     d = df
     if anio is not None and "anio" in d.columns:
         d = d[d["anio"] == anio]
@@ -976,6 +990,9 @@ def _apply_filters(df, anio, periodo, genero, estrato, depto, mcpio,
         d = d[d["gruporeferencia"].astype(str).str.strip() == grupo]
     if pago and pago in d.columns:
         d = d[_is_truthy(d[pago])]
+    if origen and "inst_origen" in d.columns:
+        valid = ORIGEN_GROUPS.get(origen, set())
+        d = d[d["inst_origen"].astype(str).str.strip().str.upper().isin(valid)]
     return d
 
 
@@ -1001,12 +1018,14 @@ _FIG_OUTPUTS = [
     Input("punt-f-sede",    "value"),
     Input("punt-f-grupo",   "value"),
     Input("punt-f-pago",    "value"),
+    Input("punt-f-origen",  "value"),
 )
 def update_puntajes(anio, periodo, genero, estrato, depto, mcpio,
-                    usb_value, sede, grupo, pago):
+                    usb_value, sede, grupo, pago, origen):
     usb_only = bool(usb_value) and "on" in usb_value
     d = _apply_filters(_DF, anio, periodo, genero, estrato, depto, mcpio,
-                       usb_only=usb_only, sede=sede, grupo=grupo, pago=pago)
+                       usb_only=usb_only, sede=sede, grupo=grupo, pago=pago,
+                       origen=origen)
     total = len(d)
 
     activos = []
@@ -1022,6 +1041,7 @@ def update_puntajes(anio, periodo, genero, estrato, depto, mcpio,
     if pago:
         pago_lab = next((l for l, c in PAGO_COLS if c == pago), pago)
         activos.append(f"pago={pago_lab}")
+    if origen:           activos.append(f"origen={origen}")
     resumen = ("Filtros: " + " · ".join(activos)) if activos \
               else "Sin filtros activos · mostrando todo 2016–2023"
 
@@ -1154,9 +1174,10 @@ def _corr_table(df):
     Input("punt-f-sede",    "value"),
     Input("punt-f-grupo",   "value"),
     Input("punt-f-pago",    "value"),
+    Input("punt-f-origen",  "value"),
 )
 def update_pareado(anio, periodo, genero, estrato, depto, mcpio,
-                   usb_value, sede, grupo, pago):
+                   usb_value, sede, grupo, pago, origen):
     if _DF_PAREADO.empty:
         empties = [empty_fig("Cache pareado no disponible")] * len(_PAREADO_FIG_OUTPUTS)
         msg = "Cache pareado no construido · revisa conexión a Postgres y la tabla `llaves`."
@@ -1164,7 +1185,8 @@ def update_pareado(anio, periodo, genero, estrato, depto, mcpio,
 
     usb_only = bool(usb_value) and "on" in usb_value
     d = _apply_filters(_DF_PAREADO, anio, periodo, genero, estrato, depto, mcpio,
-                       usb_only=usb_only, sede=sede, grupo=grupo, pago=pago)
+                       usb_only=usb_only, sede=sede, grupo=grupo, pago=pago,
+                       origen=origen)
     n_pairs = len(d)
     summary = (f"Pares emparejados (filtros aplicados sobre lado SB Pro): "
                f"{n_pairs:,} · total disponible: {len(_DF_PAREADO):,}")
