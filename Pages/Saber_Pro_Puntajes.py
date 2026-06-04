@@ -124,15 +124,20 @@ SBPRO_PAREADO_COLS = [
 #            label corto, label largo)
 MODULE_PAIRS = [
     ("mod_razona_cuantitat_punt_norm", "punt_matematicas_norm_sb11",
-     "Mate / Razona cuant.", "Matemáticas (SB11) ↔ Razonamiento cuantitativo (SB Pro)"),
+     "Competencia lógico-cuantitativa",
+     "Matemáticas (SB11) ↔ Razonamiento cuantitativo (SB Pro)"),
     ("mod_lectura_critica_punt_norm",  "punt_lectura_critica_norm_sb11",
-     "Lectura crítica",      "Lectura crítica (SB11) ↔ Lectura crítica (SB Pro)"),
+     "Competencia lectora-comunicativa",
+     "Lectura crítica (SB11) ↔ Lectura crítica (SB Pro)"),
     ("mod_competen_ciudada_punt_norm", "punt_sociales_ciudadanas_norm_sb11",
-     "Sociales / Ciudadanas","Sociales y ciudadanas (SB11) ↔ Competencias ciudadanas (SB Pro)"),
+     "Competencia ciudadana-cívica",
+     "Sociales y ciudadanas (SB11) ↔ Competencias ciudadanas (SB Pro)"),
     ("mod_ingles_punt_norm",           "punt_ingles_norm_sb11",
-     "Inglés",               "Inglés (SB11) ↔ Inglés (SB Pro)"),
+     "Competencia en Inglés",
+     "Inglés (SB11) ↔ Inglés (SB Pro)"),
     ("punt_global_norm",               "punt_global_norm_sb11",
-     "Puntaje global",       "Puntaje global (SB11) ↔ Puntaje global (SB Pro)"),
+     "Puntaje Global",
+     "Puntaje global (SB11) ↔ Puntaje global (SB Pro)"),
 ]
 
 # Niveles de desempeño en inglés (en su orden ordinal nativo)
@@ -505,7 +510,7 @@ def density_scatter_fig(x, y, xlab="SB 11", ylab="SB Pro"):
         x=x, y=y, nbinsx=50, nbinsy=50,
         colorscale=[[0, BG], [0.2, ACCENT1], [1, ACCENT4]],
         hovertemplate=(f"{xlab}: %{{x}}<br>{ylab}: %{{y}}"
-                       "<br>n=%{z}<extra></extra>"),
+                       "<br>n=%{z:,}<extra></extra>"),
         showscale=False,
     ))
     lo = float(min(x.min(), y.min()))
@@ -662,6 +667,19 @@ def section_title(text):
 def sublabel(text):
     return html.Div(text, style={"color": TEXT_MUTED,
                                  "fontSize": "11px", "marginBottom": "8px"})
+
+def group_title(text):
+    return html.Div(text, style={
+        "color": TEXT_MAIN, "fontSize": "14px", "fontWeight": "600",
+        "letterSpacing": "1.5px", "textTransform": "uppercase",
+        "borderLeft": f"2px solid {ACCENT3}", "paddingLeft": "10px",
+        "marginTop": "24px", "marginBottom": "14px"})
+
+def chart_title(text):
+    return html.Div(text, style={
+        "color": ACCENT1, "fontSize": "13px", "fontWeight": "600",
+        "letterSpacing": "1px", "marginBottom": "8px",
+        "textTransform": "uppercase"})
 
 def row(*children, gap="16px"):
     return html.Div(list(children), style={"display": "flex",
@@ -822,19 +840,19 @@ layout = html.Div(style={
     card([
         section_title("Puntajes por módulo"),
         row(
-            col([sublabel("Razonamiento cuantitativo"),
+            col([chart_title("Razonamiento cuantitativo"),
                  graph("punt-fig-punt-razona", "260px")]),
-            col([sublabel("Lectura crítica"),
+            col([chart_title("Lectura crítica"),
                  graph("punt-fig-punt-lectura", "260px")]),
-            col([sublabel("Competencias ciudadanas"),
+            col([chart_title("Competencias ciudadanas"),
                  graph("punt-fig-punt-ciud", "260px")]),
         ),
         row(
-            col([sublabel("Inglés"),
+            col([chart_title("Inglés"),
                  graph("punt-fig-punt-ingles", "260px")]),
-            col([sublabel("Comunicación escrita"),
+            col([chart_title("Comunicación escrita"),
                  graph("punt-fig-punt-escrita", "260px")]),
-            col([sublabel("Puntaje global"),
+            col([chart_title("Puntaje global"),
                  graph("punt-fig-punt-global", "260px")]),
         ),
     ]),
@@ -842,17 +860,17 @@ layout = html.Div(style={
     card([
         section_title("Nivel de desempeño por módulo"),
         row(
-            col([sublabel("Razonamiento cuantitativo"),
+            col([chart_title("Razonamiento cuantitativo"),
                  graph("punt-fig-desem-razona", "280px")]),
-            col([sublabel("Lectura crítica"),
+            col([chart_title("Lectura crítica"),
                  graph("punt-fig-desem-lectura", "280px")]),
-            col([sublabel("Competencias ciudadanas"),
+            col([chart_title("Competencias ciudadanas"),
                  graph("punt-fig-desem-ciud", "280px")]),
         ),
         row(
-            col([sublabel("Inglés"),
+            col([chart_title("Inglés"),
                  graph("punt-fig-desem-ingles", "280px")]),
-            col([sublabel("Comunicación escrita"),
+            col([chart_title("Comunicación escrita"),
                  graph("punt-fig-desem-escrita", "280px")]),
         ),
     ]),
@@ -865,38 +883,41 @@ layout = html.Div(style={
                         "marginBottom": "16px",
                         "fontFamily": "'IBM Plex Mono', monospace"}),
 
-        sublabel("Resumen de correlaciones por módulo (sobre puntajes normalizados)"),
+        group_title("Resumen de correlaciones por módulo"),
+        sublabel("Sobre puntajes normalizados"),
         html.Div(id="punt-pareado-corr-table", style={"marginBottom": "20px"}),
 
-        sublabel("Tendencia por cohorte (media de puntaje normalizado, SB 11 vs SB Pro)"),
+        group_title("Tendencia por cohorte"),
+        sublabel("Media de puntaje normalizado, SB 11 vs SB Pro"),
         row(
-            col([sublabel("Mate / Razona cuant."),
+            col([chart_title("Competencia lógico-cuantitativa"),
                  graph("punt-fig-pareado-trend-mate", "260px")]),
-            col([sublabel("Lectura crítica"),
+            col([chart_title("Competencia lectora-comunicativa"),
                  graph("punt-fig-pareado-trend-lect", "260px")]),
-            col([sublabel("Sociales / Ciudadanas"),
+            col([chart_title("Competencia ciudadana-cívica"),
                  graph("punt-fig-pareado-trend-ciud", "260px")]),
         ),
         row(
-            col([sublabel("Inglés"),
+            col([chart_title("Competencia en Inglés"),
                  graph("punt-fig-pareado-trend-ing", "260px")]),
-            col([sublabel("Puntaje global"),
+            col([chart_title("Puntaje Global"),
                  graph("punt-fig-pareado-trend-glo", "260px")]),
         ),
 
-        sublabel("Distribución del Δ (SB Pro − SB 11) sobre puntaje normalizado"),
+        group_title("Distribución del Δ (SB Pro − SB 11)"),
+        sublabel("Sobre puntaje normalizado"),
         row(
-            col([sublabel("Mate / Razona cuant."),
+            col([chart_title("Competencia lógico-cuantitativa"),
                  graph("punt-fig-pareado-delta-mate", "260px")]),
-            col([sublabel("Lectura crítica"),
+            col([chart_title("Competencia lectora-comunicativa"),
                  graph("punt-fig-pareado-delta-lect", "260px")]),
-            col([sublabel("Sociales / Ciudadanas"),
+            col([chart_title("Competencia ciudadana-cívica"),
                  graph("punt-fig-pareado-delta-ciud", "260px")]),
         ),
         row(
-            col([sublabel("Inglés"),
+            col([chart_title("Competencia en Inglés"),
                  graph("punt-fig-pareado-delta-ing", "260px")]),
-            col([sublabel("Puntaje global"),
+            col([chart_title("Puntaje Global"),
                  graph("punt-fig-pareado-delta-glo", "260px")]),
         ),
     ]),
@@ -904,41 +925,43 @@ layout = html.Div(style={
     card([
         section_title("Detalle pareado por módulo"),
 
-        sublabel("Scatter pareado por módulo (densidad, puntaje normalizado)"),
+        group_title("Scatter pareado por módulo"),
+        sublabel("Densidad sobre puntaje normalizado"),
         row(
-            col([sublabel("Mate / Razona cuant."),
+            col([chart_title("Competencia lógico-cuantitativa"),
                  graph("punt-fig-pareado-scatter-mate", "280px")]),
-            col([sublabel("Lectura crítica"),
+            col([chart_title("Competencia lectora-comunicativa"),
                  graph("punt-fig-pareado-scatter-lect", "280px")]),
-            col([sublabel("Sociales / Ciudadanas"),
+            col([chart_title("Competencia ciudadana-cívica"),
                  graph("punt-fig-pareado-scatter-ciud", "280px")]),
         ),
         row(
-            col([sublabel("Inglés"),
+            col([chart_title("Competencia en Inglés"),
                  graph("punt-fig-pareado-scatter-ing", "280px")]),
-            col([sublabel("Puntaje global"),
+            col([chart_title("Puntaje Global"),
                  graph("punt-fig-pareado-scatter-glo", "280px")]),
         ),
 
-        sublabel("Matriz de transición por quintiles (% por fila — fila = quintil SB 11)"),
+        group_title("Matriz de transición por quintiles"),
+        sublabel("% por fila — fila = quintil SB 11"),
         row(
-            col([sublabel("Mate / Razona cuant."),
+            col([chart_title("Competencia lógico-cuantitativa"),
                  graph("punt-fig-pareado-quint-mate", "280px")]),
-            col([sublabel("Lectura crítica"),
+            col([chart_title("Competencia lectora-comunicativa"),
                  graph("punt-fig-pareado-quint-lect", "280px")]),
-            col([sublabel("Sociales / Ciudadanas"),
+            col([chart_title("Competencia ciudadana-cívica"),
                  graph("punt-fig-pareado-quint-ciud", "280px")]),
         ),
         row(
-            col([sublabel("Inglés"),
+            col([chart_title("Competencia en Inglés"),
                  graph("punt-fig-pareado-quint-ing", "280px")]),
-            col([sublabel("Puntaje global"),
+            col([chart_title("Puntaje Global"),
                  graph("punt-fig-pareado-quint-glo", "280px")]),
         ),
 
-        card([sublabel("Transición de nivel de desempeño en inglés "
-                       "(SB 11 → SB Pro, % por fila — escalas nativas)"),
-              graph("punt-fig-pareado-eng-desem", "420px")]),
+        group_title("Transición de nivel de desempeño en inglés"),
+        sublabel("SB 11 → SB Pro, % por fila — escalas nativas"),
+        graph("punt-fig-pareado-eng-desem", "420px"),
     ]),
 
     html.Div("ICFES Saber Pro · Puntajes 2016–2023",
