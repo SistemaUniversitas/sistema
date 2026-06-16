@@ -644,12 +644,31 @@ def _opt_list(series, sort=True):
     if sort: vals = sorted(vals)
     return [{"label": v, "value": v} for v in vals]
 
+USB_TOKEN = "san buenaventura"
+
+def _is_usb(series: pd.Series) -> pd.Series:
+    return series.astype(str).str.contains(USB_TOKEN, case=False, na=False)
+
+def _usb_sede(name: str) -> str:
+    s = str(name).strip()
+    if not s or USB_TOKEN not in s.lower():
+        return ""
+    return s.rsplit("-", 1)[1].strip().upper() if "-" in s else "SIN SEDE"
+
+def _usb_sede_opts(df: pd.DataFrame):
+    if "inst_nombre_institucion" not in df.columns:
+        return []
+    s = df.loc[_is_usb(df["inst_nombre_institucion"]), "inst_nombre_institucion"]
+    sedes = sorted({_usb_sede(n) for n in s.dropna() if _usb_sede(n)})
+    return [{"label": v, "value": v} for v in sedes]
+
 YEAR_OPTS    = [{"label": str(y), "value": y}
                 for y in sorted(_DF["anio"].dropna().unique())]
 PERIODO_OPTS = _opt_list(_DF.get("periodo", pd.Series(dtype=str)))
 GENERO_OPTS  = _opt_list(_DF.get("estu_genero", pd.Series(dtype=str)))
 ESTRATO_OPTS = _opt_list(_DF.get("fami_estratovivienda", pd.Series(dtype=str)))
 DEPTO_OPTS   = _opt_list(_DF.get("estu_depto_reside", pd.Series(dtype=str)))
+USB_SEDE_OPTS = _usb_sede_opts(_DF)
 
 # ─────────────────────────────────────────────────────────────
 # LAYOUT
@@ -685,6 +704,21 @@ def _filter_bar():
             dd("unif-f-estrato", "Estrato",      ESTRATO_OPTS, value=None),
             dd("unif-f-depto",   "Departamento", DEPTO_OPTS,   value=None),
             dd("unif-f-mcpio",   "Municipio",    [],           value=None),
+        ),
+        row(
+            html.Div([
+                html.Div("Solo Universidad de San Buenaventura",
+                         style={"color": TEXT_MUTED, "fontSize": "10px",
+                                "letterSpacing": "1.5px", "marginBottom": "4px",
+                                "textTransform": "uppercase"}),
+                dcc.Checklist(
+                    id="unif-f-usb",
+                    options=[{"label": " Activar filtro USB", "value": "on"}],
+                    value=[],
+                    style={"color": TEXT_MAIN, "fontSize": "12px"},
+                    inputStyle={"marginRight": "6px"}),
+            ], style={"flex": "1", "minWidth": "240px"}),
+            dd("unif-f-sede", "Sede USB", USB_SEDE_OPTS, value=None),
         ),
         html.Div(id="unif-filter-summary",
                  style={"color": TEXT_MUTED, "fontSize": "11px",
@@ -1055,7 +1089,8 @@ def _toggle_ayuda_heatmap(n_open, n_close):
     return {**base, "display": "none"}
 
 
-def _apply_filters(df, anio, periodo, genero, estrato, depto, mcpio):
+def _apply_filters(df, anio, periodo, genero, estrato, depto, mcpio,
+                   usb_only=False, sede=None):
     d = df
     if anio is not None:
         d = d[d["anio"] == anio]
@@ -1069,6 +1104,10 @@ def _apply_filters(df, anio, periodo, genero, estrato, depto, mcpio):
         d = d[d["estu_depto_reside"].astype(str).str.strip() == depto]
     if mcpio:
         d = d[d["estu_mcpio_reside"].astype(str).str.strip() == mcpio]
+    if (usb_only or sede) and "inst_nombre_institucion" in d.columns:
+        d = d[_is_usb(d["inst_nombre_institucion"])]
+        if sede:
+            d = d[d["inst_nombre_institucion"].apply(_usb_sede) == sede]
     return d
 
 
@@ -1114,9 +1153,13 @@ _FIG_OUTPUTS = [
     Input("unif-f-estrato", "value"),
     Input("unif-f-depto",   "value"),
     Input("unif-f-mcpio",   "value"),
+    Input("unif-f-usb",     "value"),
+    Input("unif-f-sede",    "value"),
 )
-def update_all(anio, periodo, genero, estrato, depto, mcpio):
-    d = _apply_filters(_DF, anio, periodo, genero, estrato, depto, mcpio)
+def update_all(anio, periodo, genero, estrato, depto, mcpio, usb_value, sede):
+    usb_only = bool(usb_value) and "on" in usb_value
+    d = _apply_filters(_DF, anio, periodo, genero, estrato, depto, mcpio,
+                       usb_only=usb_only, sede=sede)
     total = len(d)
 
     # Resumen de filtros activos
@@ -1127,6 +1170,8 @@ def update_all(anio, periodo, genero, estrato, depto, mcpio):
     if estrato:          activos.append(f"estrato={estrato}")
     if depto:            activos.append(f"depto={depto}")
     if mcpio:            activos.append(f"mcpio={mcpio}")
+    if usb_only:         activos.append("USB=on")
+    if sede:             activos.append(f"sede={sede}")
     resumen = ("Filtros: " + " · ".join(activos)) if activos \
               else "Sin filtros activos · mostrando todo 2014–2023"
 
