@@ -301,6 +301,25 @@ def _fmt_yrs(x):
     return f"{x:.1f}".rstrip("0").rstrip(".")
 
 
+def _incert_legend_traces():
+    """Trazas invisibles para mostrar la leyenda común del esquema de colores
+    usado en incert_anos_fig e incert_desviacion_fig."""
+    items = [
+        (ACCENT5,    "Presentación antes de lo esperado"),
+        (ACCENT2,    "Presentación dentro del tiempo esperado"),
+        (ACCENT3,    "Presentación luego del tiempo esperado"),
+        ("#C23B22",  "Presentación mucho más tarde del tiempo esperado"),
+    ]
+    return [
+        go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=10, color=color, symbol="square"),
+            name=label, showlegend=True, hoverinfo="skip",
+        )
+        for color, label in items
+    ]
+
+
 def incert_anos_fig(pairs, std_years=STANDARD_YEARS):
     """Barras por año real de presentación SB Pro.
     Una cohorte → colorea según delta vs su estándar (`std_years`) y marca el esperado.
@@ -355,7 +374,12 @@ def incert_anos_fig(pairs, std_years=STANDARD_YEARS):
         textfont=dict(size=10, color=TEXT_MUTED),
         customdata=customdata,
         hovertemplate="%{customdata}<br>Estudiantes: %{y:,}<extra></extra>",
+        showlegend=False,
     ))
+
+    if single:
+        for trace in _incert_legend_traces():
+            fig.add_trace(trace)
 
     # Línea del estándar en su posición (interpolada si es fraccionaria)
     if single and years[0] <= expected <= years[-1]:
@@ -371,6 +395,7 @@ def incert_anos_fig(pairs, std_years=STANDARD_YEARS):
 
     fig.update_layout(
         **LAYOUT_BASE,
+        showlegend=single,
         xaxis=dict(
             title="Año de presentación Saber Pro",
             tickmode="array", tickvals=x_idx, ticktext=x_labels,
@@ -378,6 +403,11 @@ def incert_anos_fig(pairs, std_years=STANDARD_YEARS):
         ),
         yaxis=dict(title="Estudiantes coincidentes", gridcolor=BORDER,
                    zerolinecolor=BORDER),
+        legend=dict(
+            font=dict(color=TEXT_MAIN, size=10),
+            bgcolor="rgba(0,0,0,0)",
+            orientation="h", yanchor="bottom", y=1.02, x=0,
+        ),
     )
     return fig
 
@@ -405,8 +435,8 @@ def incert_desviacion_fig(pairs, std_sems=STANDARD_SEMESTERS, std_years=STANDARD
     def _color(d):
         if d < 0:  return ACCENT5
         if d == 0: return ACCENT2
-        frac = min(d / 8, 1.0)
-        return f"hsl({int(10 - 10*frac)}, 75%, {int(58 - 18*frac)}%)"
+        if d <= 4: return ACCENT3
+        return "#C23B22"
 
     colors = [_color(d) for d in devs]
 
@@ -428,10 +458,14 @@ def incert_desviacion_fig(pairs, std_sems=STANDARD_SEMESTERS, std_years=STANDARD
         marker=dict(color=colors, line=dict(color="rgba(0,0,0,0)")),
         customdata=labels,
         hovertemplate="Desviación: %{customdata}<br>Estudiantes: %{y:,}<extra></extra>",
+        showlegend=False,
     ))
+    for trace in _incert_legend_traces():
+        fig.add_trace(trace)
     fig.add_vline(x=0, line=dict(color=ACCENT2, dash="dot", width=1.5))
     fig.update_layout(
         **LAYOUT_BASE,
+        showlegend=True,
         xaxis=dict(
             title=f"Desviación respecto al estándar en semestres  (0 = {_fmt_yrs(std_years)} años)",
             tickmode="array", tickvals=devs, ticktext=labels,
@@ -439,6 +473,11 @@ def incert_desviacion_fig(pairs, std_sems=STANDARD_SEMESTERS, std_years=STANDARD
         ),
         yaxis=dict(title="Estudiantes coincidentes", gridcolor=BORDER,
                    zerolinecolor=BORDER),
+        legend=dict(
+            font=dict(color=TEXT_MAIN, size=10),
+            bgcolor="rgba(0,0,0,0)",
+            orientation="h", yanchor="bottom", y=1.02, x=0,
+        ),
         shapes=[dict(
             type="rect", xref="x", yref="paper",
             x0=-0.5, x1=0.5, y0=0, y1=1,
@@ -707,9 +746,11 @@ def _overview_figs():
     continuaron = [_META[y]["continuaron"]    for y in years]
     desertores  = [_META[y]["desertores"]     for y in years]
 
-    # ── Gráfico 1: línea de tasa de no coincidencia + tendencia ──
+    # ── Gráfico 1: líneas de tasa de no coincidencia / coincidencia + tendencias ──
+    tasas_coinc = [100 - t for t in tasas]
     fig_tasa = go.Figure()
     fig_tasa.add_trace(go.Scatter(
+        name="No coincidencia",
         x=[str(y) for y in years], y=tasas,
         mode="lines+markers",
         line=dict(color=ACCENT3, width=2.5),
@@ -719,15 +760,37 @@ def _overview_figs():
     tl = _trendline(years, tasas)
     if tl:
         fig_tasa.add_trace(go.Scatter(
+            name="Tendencia no coincidencia",
             x=[str(y) for y in years], y=tl[1],
-            mode="lines", line=dict(color=TEXT_MUTED, width=1.5, dash="dot"),
+            mode="lines", line=dict(color=ACCENT3, width=1.5, dash="dot"),
+            hoverinfo="skip",
+        ))
+    fig_tasa.add_trace(go.Scatter(
+        name="Coincidencia",
+        x=[str(y) for y in years], y=tasas_coinc,
+        mode="lines+markers",
+        line=dict(color=ACCENT2, width=2.5),
+        marker=dict(size=8, color=ACCENT2),
+        hovertemplate="Cohorte %{x}<br>Coincidencia: %{y:.2f}%<extra></extra>",
+    ))
+    tl_coinc = _trendline(years, tasas_coinc)
+    if tl_coinc:
+        fig_tasa.add_trace(go.Scatter(
+            name="Tendencia coincidencia",
+            x=[str(y) for y in years], y=tl_coinc[1],
+            mode="lines", line=dict(color=ACCENT2, width=1.5, dash="dot"),
             hoverinfo="skip",
         ))
     fig_tasa.update_layout(
-        **LAYOUT_BASE, showlegend=False,
+        **LAYOUT_BASE, showlegend=True,
         xaxis=dict(title="Cohorte (año Saber 11)", gridcolor="rgba(0,0,0,0)"),
-        yaxis=dict(title="Tasa de no coincidencia (%)", gridcolor=BORDER,
-                   zerolinecolor=BORDER, range=[0, max(tasas) * 1.15 if tasas else 100]),
+        yaxis=dict(title="Tasa (%)", gridcolor=BORDER,
+                   zerolinecolor=BORDER, range=[0, 100]),
+        legend=dict(
+            font=dict(color=TEXT_MAIN, size=10),
+            bgcolor="rgba(0,0,0,0)",
+            orientation="h", yanchor="bottom", y=1.02, x=0,
+        ),
     )
 
     # ── Gráfico 2: área apilada al 100% coincidentes vs no coincidentes ──
@@ -766,10 +829,12 @@ def trend_line_fig(selected_year):
     if not _META:
         return empty_fig("Sin datos")
     years = sorted(_META.keys())
-    tasas = [_META[y]["tasa_desercion"] for y in years]
+    tasas       = [_META[y]["tasa_desercion"] for y in years]
+    tasas_coinc = [100 - t for t in tasas]
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
+        name="No coincidencia",
         x=[str(y) for y in years], y=tasas,
         mode="lines+markers",
         line=dict(color=ACCENT1, width=2.5),
@@ -779,25 +844,60 @@ def trend_line_fig(selected_year):
     tl = _trendline(years, tasas)
     if tl:
         fig.add_trace(go.Scatter(
+            name="Tendencia no coincidencia",
             x=[str(y) for y in years], y=tl[1],
-            mode="lines", line=dict(color=TEXT_MUTED, width=1.5, dash="dot"),
+            mode="lines", line=dict(color=ACCENT1, width=1.5, dash="dot"),
+            hoverinfo="skip",
+        ))
+    fig.add_trace(go.Scatter(
+        name="Coincidencia",
+        x=[str(y) for y in years], y=tasas_coinc,
+        mode="lines+markers",
+        line=dict(color=ACCENT2, width=2.5),
+        marker=dict(size=7, color=ACCENT2),
+        hovertemplate="Cohorte %{x}<br>Coincidencia: %{y:.2f}%<extra></extra>",
+    ))
+    tl_coinc = _trendline(years, tasas_coinc)
+    if tl_coinc:
+        fig.add_trace(go.Scatter(
+            name="Tendencia coincidencia",
+            x=[str(y) for y in years], y=tl_coinc[1],
+            mode="lines", line=dict(color=ACCENT2, width=1.5, dash="dot"),
             hoverinfo="skip",
         ))
     if selected_year in _META:
-        sy_tasa = _META[selected_year]["tasa_desercion"]
+        sy_tasa  = _META[selected_year]["tasa_desercion"]
+        sy_coinc = 100 - sy_tasa
         fig.add_trace(go.Scatter(
+            name="Cohorte seleccionada",
             x=[str(selected_year)], y=[sy_tasa],
             mode="markers+text",
             marker=dict(size=16, color=ACCENT5, line=dict(color=BG, width=2)),
             text=[f"{sy_tasa:.1f}%"], textposition="top center",
             textfont=dict(color=ACCENT5, size=11),
             hovertemplate=f"Cohorte {selected_year}<br>%{{y:.2f}}%<extra></extra>",
+            showlegend=False,
+        ))
+        fig.add_trace(go.Scatter(
+            name="Cohorte seleccionada (coincidencia)",
+            x=[str(selected_year)], y=[sy_coinc],
+            mode="markers+text",
+            marker=dict(size=16, color=ACCENT5, line=dict(color=BG, width=2)),
+            text=[f"{sy_coinc:.1f}%"], textposition="bottom center",
+            textfont=dict(color=ACCENT5, size=11),
+            hovertemplate=f"Cohorte {selected_year}<br>%{{y:.2f}}%<extra></extra>",
+            showlegend=False,
         ))
     fig.update_layout(
-        **LAYOUT_BASE, showlegend=False,
+        **LAYOUT_BASE, showlegend=True,
         xaxis=dict(title="Cohorte (año Saber 11)", gridcolor="rgba(0,0,0,0)"),
-        yaxis=dict(title="Tasa de no coincidencia (%)", gridcolor=BORDER,
-                   zerolinecolor=BORDER, range=[0, max(tasas) * 1.2 if tasas else 100]),
+        yaxis=dict(title="Tasa (%)", gridcolor=BORDER,
+                   zerolinecolor=BORDER, range=[0, 100]),
+        legend=dict(
+            font=dict(color=TEXT_MAIN, size=10),
+            bgcolor="rgba(0,0,0,0)",
+            orientation="h", yanchor="bottom", y=1.02, x=0,
+        ),
     )
     return fig
 
@@ -1000,7 +1100,7 @@ layout = html.Div(style={
         section_title("Resumen general · todas las cohortes"),
         row(
             col([
-                html.Div("Tendencia de la tasa de no coincidencia por cohorte",
+                html.Div("Tendencia de las tasas de coincidencia y no coincidencia por cohorte",
                          style={"color": TEXT_MUTED, "fontSize": "11px",
                                 "marginBottom": "8px"}),
                 dcc.Graph(figure=_FIG_TASA_OV, config={"displayModeBar": False},
@@ -1040,7 +1140,7 @@ layout = html.Div(style={
         section_title("Tendencia de la falta de coincidencia"),
         row(
             col([
-                html.Div("Evolución de la tasa de no coincidencia (cohorte resaltada)",
+                html.Div("Evolución de las tasas de coincidencia y no coincidencia (cohorte resaltada)",
                          style={"color": TEXT_MUTED, "fontSize": "11px",
                                 "marginBottom": "8px"}),
                 g("des-fig-trend-line", "320px"),
