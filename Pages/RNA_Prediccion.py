@@ -1,0 +1,502 @@
+"""
+Dashboard ICFES · RNA · Predicción Saber Pro a partir de Saber 11
+=================================================================
+Página dedicada a visualizar los resultados del modelo (RNA) entrenado en la
+Etapa 2. NO reentrena ni predice en vivo: lee los artefactos ya generados.
+
+Lee de la carpeta Datos/ (relativa al dashboard):
+  - predicciones.parquet   (real vs predicho por módulo, columna 'forma')
+  - metricas.json          (MAE/RMSE/R² por módulo y forma, en test)
+  - metadatos.json         (nombres de columnas, años de cada split)
+
+Filtros: forma (1/2), módulo, split (test por defecto), institución (objetivo
+vs total). Visualiza: real vs predicho, distribución, residuales y comparación
+de MAE Forma 1 vs Forma 2.
+"""
+
+import json
+import warnings
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+from dash import html, dcc, dash_table, Input, Output, callback
+import dash
+
+warnings.filterwarnings("ignore")
+
+# ─────────────────────────────────────────────────────────────
+# REGISTRO DE PÁGINA
+# ─────────────────────────────────────────────────────────────
+dash.register_page(__name__, path="/rna-prediccion",
+                   name="RNA · Predicción Saber Pro")
+
+# ─────────────────────────────────────────────────────────────
+# RUTAS A LOS ARTEFACTOS DE LA ETAPA 2
+# ─────────────────────────────────────────────────────────────
+DASHBOARD_DIR = Path(__file__).resolve().parents[1]
+DATOS_DIR = DASHBOARD_DIR / "Datos5"
+if not DATOS_DIR.exists():
+    DATOS_DIR = DASHBOARD_DIR.parent / "Datos"
+
+ARCHIVO_PRED = DATOS_DIR / "predicciones.parquet"
+ARCHIVO_MET  = DATOS_DIR / "metricas.json"
+ARCHIVO_META = DATOS_DIR / "metadatos.json"
+
+# Módulos: id interno (en parquet) -> etiqueta legible
+MODULOS = [
+    ("razona_cuantitat", "Razonamiento Cuantitativo"),
+    ("lectura_critica",  "Lectura Crítica"),
+    ("competen_ciudada", "Competencias Ciudadanas"),
+    ("ingles",           "Inglés"),
+]
+MODULO_LABEL = dict(MODULOS)
+
+MAX_PUNTOS_SCATTER = 6000   # muestreo para el scatter (rendimiento)
+
+# ─────────────────────────────────────────────────────────────
+# PALETA Y ESTILO (idéntica al resto del dashboard)
+# ─────────────────────────────────────────────────────────────
+BG         = "#0D1117"
+CARD_BG    = "#161B22"
+ACCENT1    = "#58A6FF"
+ACCENT2    = "#3FB950"
+ACCENT3    = "#F78166"
+ACCENT4    = "#D2A8FF"
+ACCENT5    = "#FFA657"
+TEXT_MAIN  = "#E6EDF3"
+TEXT_MUTED = "#8B949E"
+BORDER     = "#30363D"
+
+PALETTE = [ACCENT1, ACCENT2, ACCENT3, ACCENT4, ACCENT5]
+
+LAYOUT_BASE = dict(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor ="rgba(0,0,0,0)",
+    font=dict(family="'IBM Plex Mono', monospace", color=TEXT_MAIN, size=12),
+    margin=dict(t=40, b=40, l=50, r=30),
+)
+
+# ─────────────────────────────────────────────────────────────
+# UI HELPERS
+# ─────────────────────────────────────────────────────────────
+def card(children, extra_style=None):
+    style = {"background": CARD_BG, "border": f"1px solid {BORDER}",
+             "borderRadius": "12px", "padding": "20px", "marginBottom": "20px"}
+    if extra_style:
+        style.update(extra_style)
+    return html.Div(children, style=style)
+
+def section_title(text):
+    return html.H3(text, style={
+        "color": ACCENT1, "fontFamily": "'IBM Plex Mono', monospace",
+        "fontSize": "13px", "letterSpacing": "2px", "textTransform": "uppercase",
+        "marginBottom": "16px", "marginTop": "0",
+        "borderLeft": f"3px solid {ACCENT1}", "paddingLeft": "10px",
+    })
+
+def sublabel(text):
+    return html.Div(text, style={
+        "color": TEXT_MUTED, "fontSize": "11px", "marginBottom": "8px",
+        "fontFamily": "'IBM Plex Mono', monospace",
+    })
+
+def row(*children, gap="16px"):
+    return html.Div(list(children),
+                    style={"display": "flex", "flexWrap": "wrap", "gap": gap})
+
+def col(children, flex="1", min_width="220px"):
+    return html.Div(children, style={"flex": flex, "minWidth": min_width})
+
+def _dd_label(text):
+    return html.Div(text, style={
+        "color": TEXT_MUTED, "fontSize": "10px", "letterSpacing": "1.5px",
+        "marginBottom": "4px", "textTransform": "uppercase",
+        "fontFamily": "'IBM Plex Mono', monospace",
+    })
+
+def kpi_box(label, value, color=ACCENT1):
+    return html.Div([
+        html.Div(label, style={"color": TEXT_MUTED, "fontSize": "10px",
+                               "letterSpacing": "1.5px",
+                               "textTransform": "uppercase"}),
+        html.Div(value, style={"color": color, "fontSize": "22px",
+                               "fontWeight": "700", "marginTop": "4px"}),
+    ], style={"background": BG, "border": f"1px solid {BORDER}",
+              "borderRadius": "8px", "padding": "14px 18px",
+              "textAlign": "center", "flex": "1", "minWidth": "120px",
+              "fontFamily": "'IBM Plex Mono', monospace"})
+
+def _alert(msg, color=ACCENT5):
+    return html.Div(msg, style={
+        "color": color, "padding": "20px",
+        "fontFamily": "'IBM Plex Mono', monospace", "fontSize": "13px",
+    })
+
+# ─────────────────────────────────────────────────────────────
+# CARGA DE ARTEFACTOS (cache en memoria del proceso)
+# ─────────────────────────────────────────────────────────────
+_cache = {"pred": None, "met": None, "meta": None, "error": None,
+          "col_inst": "inst_nombre_institucion_sbpro", "instituciones": []}
+
+def _cargar():
+    """Carga predicciones/métricas/metadatos una sola vez."""
+    if _cache["pred"] is not None or _cache["error"] is not None:
+        return
+    try:
+        if not ARCHIVO_PRED.exists():
+            _cache["error"] = (f"No se encontró {ARCHIVO_PRED}. "
+                               f"Ejecuta primero 02_entrenar.py (Etapa 2).")
+            return
+        pred = pd.read_parquet(ARCHIVO_PRED)
+
+        meta = {}
+        if ARCHIVO_META.exists():
+            meta = json.loads(ARCHIVO_META.read_text(encoding="utf-8"))
+        met = {}
+        if ARCHIVO_MET.exists():
+            met = json.loads(ARCHIVO_MET.read_text(encoding="utf-8"))
+
+        col_inst = meta.get("col_institucion", "inst_nombre_institucion_sbpro")
+        if col_inst not in pred.columns:
+            # fallback: buscar una columna que parezca de institución
+            candidatos = [c for c in pred.columns if "inst" in c.lower()]
+            col_inst = candidatos[0] if candidatos else None
+
+        instituciones = []
+        if col_inst:
+            vc = pred[col_inst].dropna().astype(str).value_counts()
+            # Cap a las 400 instituciones con más registros (dropdown manejable)
+            instituciones = list(vc.head(400).index)
+
+        _cache.update({"pred": pred, "met": met, "meta": meta,
+                       "col_inst": col_inst, "instituciones": instituciones})
+    except Exception as e:
+        _cache["error"] = str(e)
+
+
+def _filtrar(forma, split, institucion):
+    """Devuelve el subconjunto de predicciones según los filtros."""
+    df = _cache["pred"]
+    sub = df[df["forma"] == forma]
+    if split and split != "todos":
+        sub = sub[sub["split"] == split]
+    if institucion and institucion != "__TODAS__" and _cache["col_inst"]:
+        sub = sub[sub[_cache["col_inst"]].astype(str) == institucion]
+    return sub
+
+# ─────────────────────────────────────────────────────────────
+# LAYOUT
+# ─────────────────────────────────────────────────────────────
+_cargar()
+
+if _cache["error"]:
+    layout = html.Div(style={
+        "background": BG, "minHeight": "100vh",
+        "fontFamily": "'IBM Plex Mono', monospace",
+        "color": TEXT_MAIN, "padding": "24px 32px",
+    }, children=[
+        card([
+            section_title("RNA · Predicción Saber Pro"),
+            _alert(f"⚠  {_cache['error']}", color=ACCENT3),
+            sublabel("Esta página lee Datos/predicciones.parquet, "
+                     "Datos/metricas.json y Datos/metadatos.json."),
+        ]),
+    ])
+else:
+    inst_opts = ([{"label": "▸ TODAS las instituciones", "value": "__TODAS__"}] +
+                 [{"label": i, "value": i} for i in _cache["instituciones"]])
+
+    layout = html.Div(style={
+        "background": BG, "minHeight": "100vh",
+        "fontFamily": "'IBM Plex Mono', monospace",
+        "color": TEXT_MAIN, "padding": "24px 32px",
+    }, children=[
+
+        # ── Header ──
+        html.Div([
+            html.Div("ICFES · RNA · PREDICCIÓN SABER PRO",
+                     style={"color": ACCENT1, "fontSize": "11px",
+                            "letterSpacing": "4px"}),
+            html.H1("Predicción de competencias Saber Pro", style={
+                "margin": "4px 0 0 0", "fontSize": "28px",
+                "fontWeight": "700", "color": TEXT_MAIN,
+            }),
+            html.Div("Red Neuronal (MLP 128·64·32) · Saber 11 → Saber Pro · "
+                     "valores normalizados [0,1]",
+                     style={"color": TEXT_MUTED, "fontSize": "10px",
+                            "letterSpacing": "1px", "marginTop": "6px"}),
+        ], style={"marginBottom": "28px", "paddingBottom": "20px",
+                  "borderBottom": f"1px solid {BORDER}"}),
+
+        # ── Controles ──
+        card([
+            section_title("Controles"),
+            row(
+                col([
+                    _dd_label("Forma (entrada del modelo)"),
+                    dcc.Dropdown(
+                        id="rna-forma",
+                        options=[
+                            {"label": "Forma 1 · solo puntajes", "value": 1},
+                            {"label": "Forma 2 · puntajes + socioeconómicas", "value": 2},
+                        ],
+                        value=2, clearable=False,
+                        style={"color": "#000", "fontSize": "12px"},
+                    ),
+                ], min_width="240px"),
+                col([
+                    _dd_label("Módulo Saber Pro"),
+                    dcc.Dropdown(
+                        id="rna-modulo",
+                        options=[{"label": lbl, "value": mid} for mid, lbl in MODULOS],
+                        value="razona_cuantitat", clearable=False,
+                        style={"color": "#000", "fontSize": "12px"},
+                    ),
+                ], min_width="240px"),
+                col([
+                    _dd_label("Conjunto"),
+                    dcc.Dropdown(
+                        id="rna-split",
+                        options=[
+                            {"label": "Test (cohorte de validación final)", "value": "test"},
+                            {"label": "Validación", "value": "val"},
+                            {"label": "Entrenamiento", "value": "train"},
+                            {"label": "Todos", "value": "todos"},
+                        ],
+                        value="test", clearable=False,
+                        style={"color": "#000", "fontSize": "12px"},
+                    ),
+                ], min_width="220px"),
+                col([
+                    _dd_label("Institución"),
+                    dcc.Dropdown(
+                        id="rna-inst",
+                        options=inst_opts, value="__TODAS__",
+                        clearable=False, optionHeight=44,
+                        style={"color": "#000", "fontSize": "12px"},
+                    ),
+                ], min_width="280px"),
+            ),
+        ]),
+
+        # ── KPIs ──
+        html.Div(id="rna-kpis", style={"marginBottom": "20px"}),
+
+        # ── Real vs Predicho + Distribución ──
+        row(
+            col(card([
+                section_title("Real vs Predicho"),
+                sublabel("Cada punto es un estudiante. La diagonal = predicción perfecta."),
+                dcc.Graph(id="rna-scatter", config={"displayModeBar": False}),
+            ]), min_width="380px"),
+            col(card([
+                section_title("Distribución · real vs predicho"),
+                sublabel("Comparación de las distribuciones de puntaje del módulo."),
+                dcc.Graph(id="rna-dist", config={"displayModeBar": False}),
+            ]), min_width="380px"),
+        ),
+
+        # ── Residuales ──
+        card([
+            section_title("Distribución de residuales (real − predicho)"),
+            sublabel("Centrada en 0 y estrecha = buen ajuste. Sesgo = sobre/sub-estimación."),
+            dcc.Graph(id="rna-resid", config={"displayModeBar": False}),
+        ]),
+
+        # ── Comparación de formas (desde metricas.json) ──
+        card([
+            section_title("Comparación Forma 1 vs Forma 2 · MAE por módulo (test)"),
+            sublabel("La diferencia cuantifica el aporte del contexto socioeconómico."),
+            dcc.Graph(id="rna-formas", config={"displayModeBar": False}),
+        ]),
+
+        # ── Tabla de métricas ──
+        card([
+            section_title("Métricas por módulo (test)"),
+            html.Div(id="rna-tabla"),
+        ]),
+    ])
+
+# ─────────────────────────────────────────────────────────────
+# CALLBACKS
+# ─────────────────────────────────────────────────────────────
+@callback(
+    Output("rna-kpis",    "children"),
+    Output("rna-scatter", "figure"),
+    Output("rna-dist",    "figure"),
+    Output("rna-resid",   "figure"),
+    Output("rna-tabla",   "children"),
+    Input("rna-forma",  "value"),
+    Input("rna-modulo", "value"),
+    Input("rna-split",  "value"),
+    Input("rna-inst",   "value"),
+)
+def actualizar(forma, modulo, split, institucion):
+    sub = _filtrar(forma, split, institucion)
+    col_real, col_pred = f"{modulo}_real", f"{modulo}_pred"
+
+    if len(sub) == 0 or col_real not in sub.columns:
+        vacio = go.Figure().update_layout(**LAYOUT_BASE, height=360)
+        msg = _alert("⚠  No hay datos para esta combinación de filtros.")
+        return msg, vacio, vacio, vacio, msg
+
+    real = sub[col_real].to_numpy(dtype="float64")
+    pred = sub[col_pred].to_numpy(dtype="float64")
+    err  = real - pred
+
+    mae  = float(np.mean(np.abs(err)))
+    rmse = float(np.sqrt(np.mean(err ** 2)))
+    # R²
+    ss_res = float(np.sum(err ** 2))
+    ss_tot = float(np.sum((real - real.mean()) ** 2))
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    sesgo = float(np.mean(err))
+
+    # ── KPIs ──
+    kpis = row(
+        kpi_box("Estudiantes", f"{len(sub):,}", ACCENT1),
+        kpi_box("MAE", f"{mae:.4f}", ACCENT2),
+        kpi_box("RMSE", f"{rmse:.4f}", ACCENT5),
+        kpi_box("R²", f"{r2:.4f}", ACCENT4),
+        kpi_box("Sesgo medio", f"{sesgo:+.4f}", ACCENT3),
+    )
+
+    # ── Scatter real vs predicho (muestreado) ──
+    if len(sub) > MAX_PUNTOS_SCATTER:
+        idx = np.random.default_rng(42).choice(len(sub), MAX_PUNTOS_SCATTER, replace=False)
+        rx, py = real[idx], pred[idx]
+    else:
+        rx, py = real, pred
+
+    scatter = go.Figure()
+    scatter.add_trace(go.Scattergl(
+        x=rx, y=py, mode="markers",
+        marker=dict(size=4, color=ACCENT1, opacity=0.35),
+        name="Estudiantes",
+        hovertemplate="Real: %{x:.3f}<br>Predicho: %{y:.3f}<extra></extra>",
+    ))
+    scatter.add_trace(go.Scatter(
+        x=[0, 1], y=[0, 1], mode="lines",
+        line=dict(color=ACCENT3, width=2, dash="dash"),
+        name="Predicción perfecta", hoverinfo="skip",
+    ))
+    scatter.update_layout(
+        **LAYOUT_BASE, height=380,
+        xaxis=dict(title="Real (normalizado)", range=[0, 1],
+                   gridcolor=BORDER, zerolinecolor=BORDER),
+        yaxis=dict(title="Predicho (normalizado)", range=[0, 1],
+                   gridcolor=BORDER, zerolinecolor=BORDER),
+        legend=dict(orientation="h", y=1.08, x=0),
+    )
+
+    # ── Distribución real vs predicho ──
+    dist = go.Figure()
+    dist.add_trace(go.Histogram(x=real, nbinsx=40, name="Real",
+                                marker_color=ACCENT1, opacity=0.6))
+    dist.add_trace(go.Histogram(x=pred, nbinsx=40, name="Predicho",
+                                marker_color=ACCENT5, opacity=0.6))
+    dist.update_layout(
+        **LAYOUT_BASE, height=380, barmode="overlay",
+        xaxis=dict(title=f"{MODULO_LABEL[modulo]} (normalizado)",
+                   range=[0, 1], gridcolor=BORDER),
+        yaxis=dict(title="Frecuencia", gridcolor=BORDER),
+        legend=dict(orientation="h", y=1.08, x=0),
+    )
+
+    # ── Residuales ──
+    resid = go.Figure(go.Histogram(
+        x=err, nbinsx=50, marker_color=ACCENT4, opacity=0.8,
+        hovertemplate="Residual: %{x:.3f}<br>Casos: %{y}<extra></extra>",
+    ))
+    resid.add_vline(x=0, line=dict(color=ACCENT3, width=2, dash="dash"))
+    resid.update_layout(
+        **LAYOUT_BASE, height=320,
+        xaxis=dict(title="Residual (real − predicho)", gridcolor=BORDER,
+                   zerolinecolor=BORDER),
+        yaxis=dict(title="Frecuencia", gridcolor=BORDER),
+        showlegend=False,
+    )
+
+    # ── Tabla de métricas por módulo (sobre el subconjunto actual) ──
+    filas = []
+    for mid, lbl in MODULOS:
+        cr, cp = f"{mid}_real", f"{mid}_pred"
+        if cr not in sub.columns:
+            continue
+        e = sub[cr].to_numpy("float64") - sub[cp].to_numpy("float64")
+        filas.append({
+            "Módulo": lbl,
+            "MAE": round(float(np.mean(np.abs(e))), 4),
+            "RMSE": round(float(np.sqrt(np.mean(e ** 2))), 4),
+            "Sesgo": round(float(np.mean(e)), 4),
+        })
+    tabla = dash_table.DataTable(
+        data=filas,
+        columns=[{"name": c, "id": c} for c in ["Módulo", "MAE", "RMSE", "Sesgo"]],
+        style_table={"overflowX": "auto", "border": f"1px solid {BORDER}",
+                     "borderRadius": "8px"},
+        style_header={"backgroundColor": BG, "color": ACCENT1,
+                      "fontFamily": "'IBM Plex Mono', monospace",
+                      "fontSize": "11px", "letterSpacing": "1.5px",
+                      "textTransform": "uppercase",
+                      "border": f"1px solid {BORDER}", "padding": "10px 14px"},
+        style_cell={"backgroundColor": CARD_BG, "color": TEXT_MAIN,
+                    "fontFamily": "'IBM Plex Mono', monospace",
+                    "fontSize": "12px", "border": f"1px solid {BORDER}",
+                    "padding": "8px 14px", "textAlign": "center"},
+        style_data_conditional=[{"if": {"row_index": "odd"},
+                                 "backgroundColor": BG}],
+    )
+
+    return kpis, scatter, dist, resid, tabla
+
+
+@callback(
+    Output("rna-formas", "figure"),
+    Input("rna-split", "value"),  # disparador; las métricas guardadas son de test
+)
+def comparar_formas(_split):
+    """Compara MAE por módulo entre Forma 1 y Forma 2 usando metricas.json
+    (calculado sobre test). Si no existe, lo calcula sobre el parquet (test)."""
+    met = _cache["met"]
+    labels = [lbl for _, lbl in MODULOS]
+
+    def mae_por_modulo(forma):
+        # 1) Intentar desde metricas.json
+        key = f"forma{forma}"
+        valores = []
+        if met and key in met:
+            m = met[key]
+            # las claves son los nombres de target (..._punt_norm); mapeamos por orden
+            target_keys = [k for k in m.keys() if k != "global"]
+            if len(target_keys) == len(MODULOS):
+                for tk in target_keys:
+                    valores.append(m[tk].get("mae", np.nan))
+                return valores
+        # 2) Fallback: calcular desde el parquet (test)
+        sub = _cache["pred"]
+        sub = sub[(sub["forma"] == forma) & (sub["split"] == "test")]
+        for mid, _ in MODULOS:
+            e = sub[f"{mid}_real"].to_numpy("float64") - sub[f"{mid}_pred"].to_numpy("float64")
+            valores.append(float(np.mean(np.abs(e))) if len(e) else np.nan)
+        return valores
+
+    mae_f1 = mae_por_modulo(1)
+    mae_f2 = mae_por_modulo(2)
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=labels, y=mae_f1, name="Forma 1 · puntajes",
+                         marker_color=ACCENT1,
+                         text=[f"{v:.3f}" for v in mae_f1], textposition="outside"))
+    fig.add_trace(go.Bar(x=labels, y=mae_f2, name="Forma 2 · + socioec.",
+                         marker_color=ACCENT2,
+                         text=[f"{v:.3f}" for v in mae_f2], textposition="outside"))
+    fig.update_layout(
+        **LAYOUT_BASE, height=380, barmode="group",
+        xaxis=dict(gridcolor="rgba(0,0,0,0)"),
+        yaxis=dict(title="MAE (test)", gridcolor=BORDER),
+        legend=dict(orientation="h", y=1.1, x=0),
+    )
+    return fig
