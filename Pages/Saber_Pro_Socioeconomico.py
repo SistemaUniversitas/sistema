@@ -668,6 +668,7 @@ PERIODO_OPTS = _opt_list(_DF.get("periodo", pd.Series(dtype=str)))
 GENERO_OPTS  = _opt_list(_DF.get("estu_genero", pd.Series(dtype=str)))
 ESTRATO_OPTS = _opt_list(_DF.get("fami_estratovivienda", pd.Series(dtype=str)))
 DEPTO_OPTS   = _opt_list(_DF.get("estu_depto_reside", pd.Series(dtype=str)))
+PRGM_OPTS    = _opt_list(_DF.get("estu_prgm_academico", pd.Series(dtype=str)))
 USB_SEDE_OPTS = _usb_sede_opts(_DF)
 
 # ─────────────────────────────────────────────────────────────
@@ -704,6 +705,7 @@ def _filter_bar():
             dd("unif-f-estrato", "Estrato",      ESTRATO_OPTS, value=None),
             dd("unif-f-depto",   "Departamento", DEPTO_OPTS,   value=None),
             dd("unif-f-mcpio",   "Municipio",    [],           value=None),
+            dd("unif-f-prgm",    "Programa",     PRGM_OPTS,    value=None),
         ),
         row(
             html.Div([
@@ -1089,7 +1091,7 @@ def _toggle_ayuda_heatmap(n_open, n_close):
     return {**base, "display": "none"}
 
 
-def _apply_filters(df, anio, periodo, genero, estrato, depto, mcpio,
+def _apply_filters(df, anio, periodo, genero, estrato, depto, mcpio, prgm,
                    usb_only=False, sede=None):
     d = df
     if anio is not None:
@@ -1104,6 +1106,8 @@ def _apply_filters(df, anio, periodo, genero, estrato, depto, mcpio,
         d = d[d["estu_depto_reside"].astype(str).str.strip() == depto]
     if mcpio:
         d = d[d["estu_mcpio_reside"].astype(str).str.strip() == mcpio]
+    if prgm:
+        d = d[d["estu_prgm_academico"].astype(str).str.strip() == prgm]
     if (usb_only or sede) and "inst_nombre_institucion" in d.columns:
         d = d[_is_usb(d["inst_nombre_institucion"])]
         if sede:
@@ -1153,12 +1157,13 @@ _FIG_OUTPUTS = [
     Input("unif-f-estrato", "value"),
     Input("unif-f-depto",   "value"),
     Input("unif-f-mcpio",   "value"),
+    Input("unif-f-prgm",    "value"),
     Input("unif-f-usb",     "value"),
     Input("unif-f-sede",    "value"),
 )
-def update_all(anio, periodo, genero, estrato, depto, mcpio, usb_value, sede):
+def update_all(anio, periodo, genero, estrato, depto, mcpio, prgm, usb_value, sede):
     usb_only = bool(usb_value) and "on" in usb_value
-    d = _apply_filters(_DF, anio, periodo, genero, estrato, depto, mcpio,
+    d = _apply_filters(_DF, anio, periodo, genero, estrato, depto, mcpio, prgm,
                        usb_only=usb_only, sede=sede)
     total = len(d)
 
@@ -1170,6 +1175,7 @@ def update_all(anio, periodo, genero, estrato, depto, mcpio, usb_value, sede):
     if estrato:          activos.append(f"estrato={estrato}")
     if depto:            activos.append(f"depto={depto}")
     if mcpio:            activos.append(f"mcpio={mcpio}")
+    if prgm:             activos.append(f"programa={prgm}")
     if usb_only:         activos.append("USB=on")
     if sede:             activos.append(f"sede={sede}")
     resumen = ("Filtros: " + " · ".join(activos)) if activos \
