@@ -27,8 +27,11 @@ warnings.filterwarnings("ignore")
 # ─────────────────────────────────────────────────────────────
 # REGISTRO DE PÁGINA
 # ─────────────────────────────────────────────────────────────
-dash.register_page(__name__, path="/saberpro-puntajes",
-                   name="Saber Pro · Puntajes unificado")
+# Solo se registra cuando la importa la app (Dash exige que la app ya exista).
+# Al ejecutar el archivo directamente (p. ej. `--rebuild`) se omite el registro.
+if __name__ != "__main__":
+    dash.register_page(__name__, path="/saberpro-puntajes",
+                       name="Saber Pro · Puntajes unificado")
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURACIÓN POSTGRES + JDBC
@@ -70,6 +73,8 @@ COLS_READ = [
     "mod_competen_ciudada_desem", "mod_ingles_desem", "mod_comuni_escrita_desem",
     "punt_global",
 ]
+# Nota: el puntaje global calculado (punt_global_calc_norm) solo se usa en la
+# sección pareada; se lee en SB11_COLS_READ / SBPRO_PAREADO_COLS, no aquí.
 
 PUNTAJES_NUM = [
     "mod_razona_cuantitat_punt", "mod_lectura_critica_punt",
@@ -93,6 +98,7 @@ SB11_COLS_READ = [
     "punt_ciencias_sociales_norm",  # Sociales/Ciudadanas en años 2010-2013
     "punt_ingles",               "punt_ingles_norm",
     "punt_global",               "punt_global_norm",
+    "punt_global_calc_norm",     # puntaje global calculado (normalizado)
     "desemp_ingles",
 ]
 
@@ -117,6 +123,7 @@ SBPRO_PAREADO_COLS = [
     "mod_competen_ciudada_punt", "mod_competen_ciudada_punt_norm",
     "mod_ingles_punt",           "mod_ingles_punt_norm",
     "punt_global",               "punt_global_norm",
+    "punt_global_calc_norm",     # puntaje global calculado (normalizado)
     "mod_ingles_desem",
 ]
 
@@ -138,6 +145,15 @@ MODULE_PAIRS = [
     ("punt_global_norm",               "punt_global_norm_sb11",
      "Puntaje Global",
      "Puntaje global (SB11) ↔ Puntaje global (SB Pro)"),
+]
+
+# Pares usados en los grupos de gráficos (tendencia, Δ, scatter, quintiles).
+# Extiende MODULE_PAIRS con el puntaje global calculado, que NO se incluye en
+# la tabla de correlaciones (esa sigue usando MODULE_PAIRS).
+MODULE_PAIRS_CHARTS = MODULE_PAIRS + [
+    ("punt_global_calc_norm",          "punt_global_calc_norm_sb11",
+     "Puntaje global calculado",
+     "Puntaje global calculado (SB11) ↔ Puntaje global calculado (SB Pro)"),
 ]
 
 # Niveles de desempeño en inglés (en su orden ordinal nativo)
@@ -902,6 +918,8 @@ layout = html.Div(style={
                  graph("punt-fig-pareado-trend-ing", "260px")]),
             col([chart_title("Puntaje Global"),
                  graph("punt-fig-pareado-trend-glo", "260px")]),
+            col([chart_title("Puntaje global calculado"),
+                 graph("punt-fig-pareado-trend-glocalc", "260px")]),
         ),
 
         group_title("Distribución del Δ (SB Pro − SB 11)"),
@@ -919,6 +937,8 @@ layout = html.Div(style={
                  graph("punt-fig-pareado-delta-ing", "260px")]),
             col([chart_title("Puntaje Global"),
                  graph("punt-fig-pareado-delta-glo", "260px")]),
+            col([chart_title("Puntaje global calculado"),
+                 graph("punt-fig-pareado-delta-glocalc", "260px")]),
         ),
     ]),
 
@@ -940,6 +960,8 @@ layout = html.Div(style={
                  graph("punt-fig-pareado-scatter-ing", "280px")]),
             col([chart_title("Puntaje Global"),
                  graph("punt-fig-pareado-scatter-glo", "280px")]),
+            col([chart_title("Puntaje global calculado"),
+                 graph("punt-fig-pareado-scatter-glocalc", "280px")]),
         ),
 
         group_title("Matriz de transición por quintiles"),
@@ -957,6 +979,8 @@ layout = html.Div(style={
                  graph("punt-fig-pareado-quint-ing", "280px")]),
             col([chart_title("Puntaje Global"),
                  graph("punt-fig-pareado-quint-glo", "280px")]),
+            col([chart_title("Puntaje global calculado"),
+                 graph("punt-fig-pareado-quint-glocalc", "280px")]),
         ),
 
         group_title("Transición de nivel de desempeño en inglés"),
@@ -1113,19 +1137,19 @@ _PAREADO_FIG_OUTPUTS = [
     # scatter
     "punt-fig-pareado-scatter-mate", "punt-fig-pareado-scatter-lect",
     "punt-fig-pareado-scatter-ciud", "punt-fig-pareado-scatter-ing",
-    "punt-fig-pareado-scatter-glo",
+    "punt-fig-pareado-scatter-glo",  "punt-fig-pareado-scatter-glocalc",
     # quintiles
     "punt-fig-pareado-quint-mate", "punt-fig-pareado-quint-lect",
     "punt-fig-pareado-quint-ciud", "punt-fig-pareado-quint-ing",
-    "punt-fig-pareado-quint-glo",
+    "punt-fig-pareado-quint-glo",  "punt-fig-pareado-quint-glocalc",
     # delta
     "punt-fig-pareado-delta-mate", "punt-fig-pareado-delta-lect",
     "punt-fig-pareado-delta-ciud", "punt-fig-pareado-delta-ing",
-    "punt-fig-pareado-delta-glo",
+    "punt-fig-pareado-delta-glo",  "punt-fig-pareado-delta-glocalc",
     # tendencia por cohorte
     "punt-fig-pareado-trend-mate", "punt-fig-pareado-trend-lect",
     "punt-fig-pareado-trend-ciud", "punt-fig-pareado-trend-ing",
-    "punt-fig-pareado-trend-glo",
+    "punt-fig-pareado-trend-glo",  "punt-fig-pareado-trend-glocalc",
     # english desempeño
     "punt-fig-pareado-eng-desem",
 ]
@@ -1219,7 +1243,7 @@ def update_pareado(anio, periodo, genero, estrato, depto, mcpio,
         return (*empties, summary + " · sin registros", _corr_table(d))
 
     scatters, quints, deltas, trends = [], [], [], []
-    for sbpro_col, sb11_col, label_short, label_long in MODULE_PAIRS:
+    for sbpro_col, sb11_col, label_short, label_long in MODULE_PAIRS_CHARTS:
         if sbpro_col in d.columns and sb11_col in d.columns:
             scatters.append(density_scatter_fig(
                 d[sb11_col], d[sbpro_col],
