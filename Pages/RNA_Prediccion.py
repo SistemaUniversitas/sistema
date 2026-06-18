@@ -23,6 +23,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from dash import html, dcc, dash_table, Input, Output, callback
 import dash
+import psycopg2
 
 warnings.filterwarnings("ignore")
 
@@ -33,15 +34,24 @@ dash.register_page(__name__, path="/rna-prediccion",
                    name="RNA · Predicción Saber Pro")
 
 # ─────────────────────────────────────────────────────────────
+# CONFIGURACIÓN POSTGRES
+# ─────────────────────────────────────────────────────────────
+PG_HOST     = "localhost"
+PG_PORT     = 5432
+PG_DATABASE = "TrabajoGrado"
+PG_USER     = "postgres"
+PG_PASSWORD = "postgres"
+
+# ─────────────────────────────────────────────────────────────
 # RUTAS A LOS ARTEFACTOS DE LA ETAPA 2
 # ─────────────────────────────────────────────────────────────
 DASHBOARD_DIR = Path(__file__).resolve().parents[1]
-DATOS_DIR = DASHBOARD_DIR / "Datos5"
+DATOS_DIR = DASHBOARD_DIR / "Datos6"
 if not DATOS_DIR.exists():
     DATOS_DIR = DASHBOARD_DIR.parent / "Datos"
 
-ARCHIVO_PRED = DATOS_DIR / "predicciones.parquet"
-ARCHIVO_MET  = DATOS_DIR / "metricas.json"
+ARCHIVO_PRED = DATOS_DIR / "predicciones_v2.parquet"
+ARCHIVO_MET  = DATOS_DIR / "metricas_v2.json"
 ARCHIVO_META = DATOS_DIR / "metadatos.json"
 
 # Módulos: id interno (en parquet) -> etiqueta legible
@@ -50,6 +60,7 @@ MODULOS = [
     ("lectura_critica",  "Lectura Crítica"),
     ("competen_ciudada", "Competencias Ciudadanas"),
     ("ingles",           "Inglés"),
+    ("global",           "Puntaje Global"),
 ]
 MODULO_LABEL = dict(MODULOS)
 
@@ -140,6 +151,57 @@ def _alert(msg, color=ACCENT5):
 _cache = {"pred": None, "met": None, "meta": None, "error": None,
           "col_inst": "inst_nombre_institucion_sbpro", "instituciones": []}
 
+def _cargar_global_pred(pred: pd.DataFrame, meta: dict) -> pd.DataFrame:
+    """Obtiene global_pred desde postgres y lo agrega al DataFrame."""
+    try:
+        with psycopg2.connect(
+            host=PG_HOST, port=PG_PORT, dbname=PG_DATABASE,
+            user=PG_USER, password=PG_PASSWORD, connect_timeout=10,
+        ) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'predicciones_saberpro_v2'
+                    ORDER BY ordinal_position
+                """)
+                cols_pg = [r[0] for r in cur.fetchall()]
+
+            if "global_pred" not in cols_pg:
+                print("  ⚠  'global_pred' no existe en predicciones_saberpro_v2.")
+                return pred
+
+            id_sbpro = meta.get("id_sbpro", "estu_consecutivo_sbpro")
+            key_col = id_sbpro if id_sbpro in cols_pg else None
+            if key_col is None:
+                for candidate in ["estu_consecutivo_sbpro", "id"]:
+                    if candidate in cols_pg:
+                        key_col = candidate
+                        break
+
+            if key_col and key_col in pred.columns:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f'SELECT "{key_col}", global_pred FROM predicciones_saberpro_v2'
+                    )
+                    rows = cur.fetchall()
+                df_pg = pd.DataFrame(rows, columns=[key_col, "global_pred"])
+                pred = pred.merge(df_pg, on=key_col, how="left")
+            else:
+                # Fallback posicional si no hay clave común
+                with conn.cursor() as cur:
+                    cur.execute("SELECT global_pred FROM predicciones_saberpro_v2")
+                    vals = [r[0] for r in cur.fetchall()]
+                if len(vals) == len(pred):
+                    pred = pred.copy()
+                    pred["global_pred"] = vals
+                else:
+                    print(f"  ⚠  No se pudo hacer join global_pred "
+                          f"(parquet={len(pred)}, postgres={len(vals)}).")
+    except Exception as e:
+        print(f"  ⚠  Error al cargar global_pred desde Postgres: {e}")
+    return pred
+
+
 def _cargar():
     """Carga predicciones/métricas/metadatos una sola vez."""
     if _cache["pred"] is not None or _cache["error"] is not None:
@@ -157,6 +219,19 @@ def _cargar():
         met = {}
         if ARCHIVO_MET.exists():
             met = json.loads(ARCHIVO_MET.read_text(encoding="utf-8"))
+
+        # Renombrar columna de puntaje global real a la convención {módulo}_real
+        for col_global_candidate in [
+            meta.get("col_global_sbpro", "global_sbpro"),
+            "punt_global_calc_norm",
+            "global_sbpro",
+        ]:
+            if col_global_candidate in pred.columns and "global_real" not in pred.columns:
+                pred = pred.rename(columns={col_global_candidate: "global_real"})
+                break
+
+        # Traer global_pred desde postgres y mergear al cache
+        pred = _cargar_global_pred(pred, meta)
 
         col_inst = meta.get("col_institucion", "inst_nombre_institucion_sbpro")
         if col_inst not in pred.columns:
@@ -337,13 +412,22 @@ def actualizar(forma, modulo, split, institucion):
     sub = _filtrar(forma, split, institucion)
     col_real, col_pred = f"{modulo}_real", f"{modulo}_pred"
 
-    if len(sub) == 0 or col_real not in sub.columns:
+    if len(sub) == 0 or col_real not in sub.columns or col_pred not in sub.columns:
         vacio = go.Figure().update_layout(**LAYOUT_BASE, height=360)
         msg = _alert("⚠  No hay datos para esta combinación de filtros.")
         return msg, vacio, vacio, vacio, msg
 
-    real = sub[col_real].to_numpy(dtype="float64")
-    pred = sub[col_pred].to_numpy(dtype="float64")
+    # Eliminar filas con NaN en el par real/pred (puede ocurrir si el join
+    # con postgres no encontró match para global_pred)
+    mask = sub[col_real].notna() & sub[col_pred].notna()
+    sub_valid = sub[mask]
+    if len(sub_valid) == 0:
+        vacio = go.Figure().update_layout(**LAYOUT_BASE, height=360)
+        msg = _alert("⚠  No hay datos válidos para esta combinación de filtros.")
+        return msg, vacio, vacio, vacio, msg
+
+    real = sub_valid[col_real].to_numpy(dtype="float64")
+    pred = sub_valid[col_pred].to_numpy(dtype="float64")
     err  = real - pred
 
     mae  = float(np.mean(np.abs(err)))
@@ -356,7 +440,7 @@ def actualizar(forma, modulo, split, institucion):
 
     # ── KPIs ──
     kpis = row(
-        kpi_box("Estudiantes", f"{len(sub):,}", ACCENT1),
+        kpi_box("Estudiantes", f"{len(sub_valid):,}", ACCENT1),
         kpi_box("MAE", f"{mae:.4f}", ACCENT2),
         kpi_box("RMSE", f"{rmse:.4f}", ACCENT5),
         kpi_box("R²", f"{r2:.4f}", ACCENT4),
@@ -364,7 +448,7 @@ def actualizar(forma, modulo, split, institucion):
     )
 
     # ── Scatter real vs predicho (muestreado) ──
-    if len(sub) > MAX_PUNTOS_SCATTER:
+    if len(sub_valid) > MAX_PUNTOS_SCATTER:
         idx = np.random.default_rng(42).choice(len(sub), MAX_PUNTOS_SCATTER, replace=False)
         rx, py = real[idx], pred[idx]
     else:
@@ -423,9 +507,14 @@ def actualizar(forma, modulo, split, institucion):
     filas = []
     for mid, lbl in MODULOS:
         cr, cp = f"{mid}_real", f"{mid}_pred"
-        if cr not in sub.columns:
+        if cr not in sub.columns or cp not in sub.columns:
             continue
-        e = sub[cr].to_numpy("float64") - sub[cp].to_numpy("float64")
+        m_valid = sub[cr].notna() & sub[cp].notna()
+        r_arr = sub.loc[m_valid, cr].to_numpy("float64")
+        p_arr = sub.loc[m_valid, cp].to_numpy("float64")
+        if len(r_arr) == 0:
+            continue
+        e = r_arr - p_arr
         filas.append({
             "Módulo": lbl,
             "MAE": round(float(np.mean(np.abs(e))), 4),
@@ -459,40 +548,61 @@ def actualizar(forma, modulo, split, institucion):
 )
 def comparar_formas(_split):
     """Compara MAE por módulo entre Forma 1 y Forma 2 usando metricas.json
-    (calculado sobre test). Si no existe, lo calcula sobre el parquet (test)."""
+    (calculado sobre test). Global se calcula siempre desde el parquet."""
     met = _cache["met"]
     labels = [lbl for _, lbl in MODULOS]
+    # Módulos sin global (los que pueden venir de metricas.json)
+    MODULOS_BASE = [(mid, lbl) for mid, lbl in MODULOS if mid != "global"]
 
     def mae_por_modulo(forma):
-        # 1) Intentar desde metricas.json
         key = f"forma{forma}"
         valores = []
+        sub_test = _cache["pred"]
+        sub_test = sub_test[(sub_test["forma"] == forma) & (sub_test["split"] == "test")]
+
+        # 1) Intentar métricas por módulo desde metricas.json
+        from_json = False
         if met and key in met:
             m = met[key]
-            # las claves son los nombres de target (..._punt_norm); mapeamos por orden
             target_keys = [k for k in m.keys() if k != "global"]
-            if len(target_keys) == len(MODULOS):
+            if len(target_keys) == len(MODULOS_BASE):
                 for tk in target_keys:
                     valores.append(m[tk].get("mae", np.nan))
-                return valores
-        # 2) Fallback: calcular desde el parquet (test)
-        sub = _cache["pred"]
-        sub = sub[(sub["forma"] == forma) & (sub["split"] == "test")]
-        for mid, _ in MODULOS:
-            e = sub[f"{mid}_real"].to_numpy("float64") - sub[f"{mid}_pred"].to_numpy("float64")
-            valores.append(float(np.mean(np.abs(e))) if len(e) else np.nan)
+                from_json = True
+
+        if not from_json:
+            for mid, _ in MODULOS_BASE:
+                cr, cp = f"{mid}_real", f"{mid}_pred"
+                if cr not in sub_test.columns or cp not in sub_test.columns:
+                    valores.append(np.nan)
+                else:
+                    e = sub_test[cr].to_numpy("float64") - sub_test[cp].to_numpy("float64")
+                    valores.append(float(np.mean(np.abs(e))) if len(e) else np.nan)
+
+        # 2) Global siempre desde el parquet (metricas.json no lo incluye)
+        if "global_real" in sub_test.columns and "global_pred" in sub_test.columns:
+            g_mask = sub_test["global_real"].notna() & sub_test["global_pred"].notna()
+            g_r = sub_test.loc[g_mask, "global_real"].to_numpy("float64")
+            g_p = sub_test.loc[g_mask, "global_pred"].to_numpy("float64")
+            valores.append(float(np.mean(np.abs(g_r - g_p))) if len(g_r) else np.nan)
+        else:
+            valores.append(np.nan)
+
         return valores
 
     mae_f1 = mae_por_modulo(1)
     mae_f2 = mae_por_modulo(2)
 
     fig = go.Figure()
+    def _fmt(v):
+        return f"{v:.3f}" if not np.isnan(v) else "N/D"
+
     fig.add_trace(go.Bar(x=labels, y=mae_f1, name="Forma 1 · puntajes",
                          marker_color=ACCENT1,
-                         text=[f"{v:.3f}" for v in mae_f1], textposition="outside"))
+                         text=[_fmt(v) for v in mae_f1], textposition="outside"))
     fig.add_trace(go.Bar(x=labels, y=mae_f2, name="Forma 2 · + socioec.",
                          marker_color=ACCENT2,
-                         text=[f"{v:.3f}" for v in mae_f2], textposition="outside"))
+                         text=[_fmt(v) for v in mae_f2], textposition="outside"))
     fig.update_layout(
         **LAYOUT_BASE, height=380, barmode="group",
         xaxis=dict(gridcolor="rgba(0,0,0,0)"),
