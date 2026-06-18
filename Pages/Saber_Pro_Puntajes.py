@@ -160,6 +160,24 @@ MODULE_PAIRS_CHARTS = MODULE_PAIRS + [
 ENG_LEVELS_SB11  = ["A-", "A1", "A2", "B1", "B+"]
 ENG_LEVELS_SBPRO = ["-A1", "A1", "A2", "B1", "B2"]
 
+# ─── Aporte institucional (SB Pro − SB11) por competencia equivalente ───
+# Cada tupla: (etiqueta visible, col SB Pro normalizada, col SB11 normalizada).
+# Se construye directamente a partir de MODULE_PAIRS_CHARTS (mismos pares y
+# mismos nombres usados en el resto de la página) para evitar duplicar
+# competencias o usar etiquetas distintas entre secciones.
+APORTE_COMPETENCIAS = [
+    (label_short, sbpro_col, sb11_col)
+    for sbpro_col, sb11_col, label_short, _ in MODULE_PAIRS_CHARTS
+]
+
+# Los dos puntajes agregados (no son "competencias" individuales) se excluyen
+# del ranking de "Mayor Aporte por competencia"; el global calculado (con
+# cobertura completa en todos los años, a diferencia del global oficial,
+# disperso en 2016-2017) es el que se usa para los KPIs de resumen global.
+APORTE_GLOBAL_LABEL      = MODULE_PAIRS[-1][2]
+APORTE_GLOBAL_CALC_LABEL = MODULE_PAIRS_CHARTS[-1][2]
+APORTE_AGREGADOS = {APORTE_GLOBAL_LABEL, APORTE_GLOBAL_CALC_LABEL}
+
 # ─────────────────────────────────────────────────────────────
 # PALETA Y ESTILO
 # ─────────────────────────────────────────────────────────────
@@ -663,6 +681,98 @@ def english_transition_fig(df):
         yaxis=dict(title="Nivel desempeño SB 11", autorange="reversed"))
     return fig
 
+# ── Aporte institucional SB Pro − SB 11, por año y competencia ──
+
+def compute_aporte_matrix(df: pd.DataFrame) -> pd.DataFrame:
+    """Devuelve un DataFrame índice=año, columnas=competencias de
+    APORTE_COMPETENCIAS, con el valor = (media(SB Pro) − media(SB11)) * 100
+    sobre puntajes normalizados (0-1), expresado en puntos sobre escala 0-100.
+    Las competencias sin equivalente en Saber 11 (sb11_col=None) quedan en
+    NaN (N/D) para todos los años."""
+    cols_order = [c[0] for c in APORTE_COMPETENCIAS]
+    if df.empty or "anio" not in df.columns:
+        return pd.DataFrame(columns=cols_order)
+
+    anio = pd.to_numeric(df["anio"], errors="coerce")
+    global_calc_sb11_col = MODULE_PAIRS_CHARTS[-1][1]  # "punt_global_calc_norm_sb11"
+
+    series_by_label = {}
+    for label, sbpro_col, sb11_col in APORTE_COMPETENCIAS:
+        if not sb11_col or not sbpro_col \
+                or sbpro_col not in df.columns or sb11_col not in df.columns:
+            series_by_label[label] = pd.Series(dtype="float64")
+            continue
+        sb11_vals = pd.to_numeric(df[sb11_col], errors="coerce")
+        # "Puntaje Global" oficial (punt_global_norm_sb11) está disperso en
+        # 2016-2017 (casi sin datos en toda la BD, no solo para una IES); se
+        # completa con el global calculado (cobertura completa) para no
+        # perder esos años, sin tocar la columna oficial en otras gráficas.
+        if label == APORTE_GLOBAL_LABEL and global_calc_sb11_col in df.columns:
+            sb11_vals = sb11_vals.fillna(
+                pd.to_numeric(df[global_calc_sb11_col], errors="coerce"))
+        sub = pd.DataFrame({
+            "anio":  anio,
+            "sbpro": pd.to_numeric(df[sbpro_col], errors="coerce"),
+            "sb11":  sb11_vals,
+        }).dropna()
+        if sub.empty:
+            series_by_label[label] = pd.Series(dtype="float64")
+            continue
+        # Los puntajes normalizados están en escala 0-1; se multiplica por 100
+        # para expresar el aporte en "puntos" sobre escala 0-100 (consistente
+        # con la magnitud esperada, p. ej. +9.8, +11.2).
+        g = sub.groupby("anio").apply(
+            lambda gr: (gr["sbpro"].mean() - gr["sb11"].mean()) * 100)
+        series_by_label[label] = g
+
+    mat = pd.DataFrame(series_by_label)
+    mat = mat.reindex(columns=cols_order)
+    return mat.sort_index()
+
+
+def aporte_heatmap_fig(mat: pd.DataFrame):
+    if mat.empty or mat.dropna(how="all").empty:
+        return empty_fig("Sin pares emparejados para los filtros seleccionados")
+    years = [str(int(y)) for y in mat.index]
+    cols  = list(mat.columns)
+    z = mat.to_numpy(dtype="float64")
+    text = [[("N/D" if pd.isna(v) else f"{v:+.1f}") for v in row] for row in z]
+    fig = go.Figure(go.Heatmap(
+        z=z, x=cols, y=years,
+        zmid=0,
+        colorscale=[[0, ACCENT3], [0.5, ACCENT5], [1, ACCENT2]],
+        text=text, texttemplate="%{text}",
+        textfont=dict(size=12, color=TEXT_MAIN),
+        hovertemplate="Año=%{y}<br>%{x}<br>Aporte=%{z:+.2f}<extra></extra>",
+        colorbar=dict(title=dict(text="Aporte", font=dict(color=TEXT_MUTED, size=10)),
+                      tickfont=dict(color=TEXT_MUTED), bgcolor="rgba(0,0,0,0)"),
+    ))
+    fig.update_layout(**LAYOUT_BASE,
+        xaxis=dict(title="Competencia", side="top"),
+        yaxis=dict(title="Año", autorange="reversed", type="category"))
+    return fig
+
+
+def aporte_kpis(mat: pd.DataFrame):
+    """Devuelve (aporte_global_promedio, (competencia, valor), (año, valor))."""
+    if mat.empty or mat.dropna(how="all").empty:
+        return None, (None, None), (None, None)
+
+    comp_cols  = [c for c in mat.columns if c not in APORTE_AGREGADOS]
+    comp_means = mat[comp_cols].mean(skipna=True).dropna()
+    mejor_comp = (comp_means.idxmax(), float(comp_means.max())) \
+                 if len(comp_means) else (None, None)
+
+    if APORTE_GLOBAL_CALC_LABEL in mat.columns and mat[APORTE_GLOBAL_CALC_LABEL].notna().any():
+        glob = mat[APORTE_GLOBAL_CALC_LABEL].dropna()
+        aporte_global_prom = float(glob.mean())
+        mejor_anio = (int(glob.idxmax()), float(glob.max()))
+    else:
+        aporte_global_prom = None
+        mejor_anio = (None, None)
+
+    return aporte_global_prom, mejor_comp, mejor_anio
+
 # ─────────────────────────────────────────────────────────────
 # UI HELPERS
 # ─────────────────────────────────────────────────────────────
@@ -696,6 +806,18 @@ def chart_title(text):
         "color": ACCENT1, "fontSize": "13px", "fontWeight": "600",
         "letterSpacing": "1px", "marginBottom": "8px",
         "textTransform": "uppercase"})
+
+def kpi_box(label, value, color=ACCENT1):
+    return html.Div([
+        html.Div(label, style={"color": TEXT_MUTED, "fontSize": "10px",
+                               "letterSpacing": "1.5px",
+                               "textTransform": "uppercase"}),
+        html.Div(value, style={"color": color, "fontSize": "22px",
+                               "fontWeight": "700", "marginTop": "4px"}),
+    ], style={"background": BG, "border": f"1px solid {BORDER}",
+              "borderRadius": "8px", "padding": "14px 18px",
+              "textAlign": "center", "flex": "1", "minWidth": "200px",
+              "fontFamily": "'IBM Plex Mono', monospace"})
 
 def row(*children, gap="16px"):
     return html.Div(list(children), style={"display": "flex",
@@ -940,6 +1062,18 @@ layout = html.Div(style={
             col([chart_title("Puntaje global calculado"),
                  graph("punt-fig-pareado-delta-glocalc", "260px")]),
         ),
+    ]),
+
+    # ── Aporte institucional por competencia y año ──
+    card([
+        section_title("Aporte Institucional por Competencia y Año"),
+        row(
+            html.Div(id="punt-aporte-kpi-global"),
+            html.Div(id="punt-aporte-kpi-mejor-comp"),
+            html.Div(id="punt-aporte-kpi-mejor-anio"),
+        ),
+        html.Div(style={"height": "16px"}),
+        graph("punt-fig-aporte-heatmap", "420px"),
     ]),
 
     card([
@@ -1261,3 +1395,57 @@ def update_pareado(anio, periodo, genero, estrato, depto, mcpio,
 
     return (*scatters, *quints, *deltas, *trends, eng_fig,
             summary, _corr_table(d))
+
+
+# ─────────────────────────────────────────────────────────────
+# CALLBACK · APORTE INSTITUCIONAL POR COMPETENCIA Y AÑO
+# ─────────────────────────────────────────────────────────────
+
+@callback(
+    Output("punt-fig-aporte-heatmap", "figure"),
+    Output("punt-aporte-kpi-global",     "children"),
+    Output("punt-aporte-kpi-mejor-comp", "children"),
+    Output("punt-aporte-kpi-mejor-anio", "children"),
+    Input("punt-f-year",    "value"),
+    Input("punt-f-periodo", "value"),
+    Input("punt-f-genero",  "value"),
+    Input("punt-f-estrato", "value"),
+    Input("punt-f-depto",   "value"),
+    Input("punt-f-mcpio",   "value"),
+    Input("punt-f-usb",     "value"),
+    Input("punt-f-sede",    "value"),
+    Input("punt-f-grupo",   "value"),
+    Input("punt-f-pago",    "value"),
+    Input("punt-f-origen",  "value"),
+)
+def update_aporte(anio, periodo, genero, estrato, depto, mcpio,
+                  usb_value, sede, grupo, pago, origen):
+    if _DF_PAREADO.empty:
+        vacio = kpi_box("Aporte Global Promedio", "—")
+        return (empty_fig("Cache pareado no disponible"), vacio,
+                kpi_box("Mayor Aporte", "—"), kpi_box("Mejor Año", "—"))
+
+    usb_only = bool(usb_value) and "on" in usb_value
+    d = _apply_filters(_DF_PAREADO, anio, periodo, genero, estrato, depto, mcpio,
+                       usb_only=usb_only, sede=sede, grupo=grupo, pago=pago,
+                       origen=origen)
+    mat = compute_aporte_matrix(d)
+    fig = aporte_heatmap_fig(mat)
+    g_prom, mejor_comp, mejor_anio = aporte_kpis(mat)
+
+    kpi_global = kpi_box(
+        "Aporte Global Promedio",
+        f"{g_prom:+.1f} puntos" if g_prom is not None else "—",
+        ACCENT2 if (g_prom is not None and g_prom >= 0) else ACCENT3)
+
+    kpi_comp = kpi_box(
+        "Mayor Aporte",
+        f"{mejor_comp[0]} ({mejor_comp[1]:+.1f})" if mejor_comp[0] is not None else "—",
+        ACCENT4)
+
+    kpi_anio = kpi_box(
+        "Mejor Año",
+        f"{mejor_anio[0]} ({mejor_anio[1]:+.1f})" if mejor_anio[0] is not None else "—",
+        ACCENT5)
+
+    return fig, kpi_global, kpi_comp, kpi_anio
