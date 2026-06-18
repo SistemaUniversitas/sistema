@@ -1,5 +1,5 @@
 """
-Dashboard ICFES – Deserción Académica por Cohorte (Genérico 2010–2018)
+Dashboard ICFES – No profesionalización por Cohorte (Genérico 2010–2018)
 =======================================================================
 Fuente: PostgreSQL (mismo esquema que Saber_Pro_Puntajes.py)
   - saber11_{año} : datos Saber 11 por cohorte (2010–2018)
@@ -11,7 +11,7 @@ Lógica:
   - Continuaron    = estudiantes con llave coincidente en `llaves`
                      (estu_consecutivo aparece en llaves.estu_consecutivo_sb11)
   - Desertores     = Total − Continuaron (sin llave → no llegaron a Saber Pro)
-  - Tasa deserción = (Desertores / Total) × 100
+  - Tasa de no profesionalización = ('Desertores' / Total) × 100
 
 Radio de incertidumbre:
   - Estándar: 5 años (10 semestres) entre SB11 y SB Pro
@@ -49,7 +49,7 @@ warnings.filterwarnings("ignore")
 # (p. ej. `python Pages/Desercion_Generica.py --rebuild`) no hay app instanciada
 # y dash.register_page lanzaría PageError, así que se omite en ese caso.
 if __name__ != "__main__":
-    dash.register_page(__name__, path="/desercion", name="Deserción · Por Cohorte")
+    dash.register_page(__name__, path="/no-profesionalizacion", name="No profesionalización · Por Cohorte")
 
 # ─────────────────────────────────────────────────────────────
 # CONFIGURACIÓN POSTGRES
@@ -523,7 +523,7 @@ def _table_columns(cur, table: str) -> set:
 
 def build_cache() -> tuple:
     print("=" * 65)
-    print("  Construyendo caché de deserción genérica (2010–2018)…")
+    print("  Construyendo caché de no profesionalización (2010–2018)…")
     print("  Fuente: Postgres · saber11_XXXX × llaves × saberpro_XXXX")
     print("=" * 65)
     t0 = time.time()
@@ -613,7 +613,7 @@ def build_cache() -> tuple:
                 df_y = pd.DataFrame(prows, columns=detail_cols)
                 df_y["anio_cohorte"] = year
                 des_frames.append(df_y)
-                print(f"         detalle desertores: {len(df_y):,} filas")
+                print(f"         detalle no profesionalizados: {len(df_y):,} filas")
 
         # ── 4. Distribución por periodo SB Pro (radio de incertidumbre) ──
         #   Para cada tabla saberpro_{sy}, cuenta cuántos estudiantes de
@@ -676,14 +676,14 @@ def build_cache() -> tuple:
 
     print(f"\n  ✅ Caché lista en {time.time()-t0:.1f}s")
     print(f"     Cohortes procesadas : {sorted(meta.keys())}")
-    print(f"     Filas de desertores : {len(df_des):,}")
+    print(f"     Filas de no profesionalizados : {len(df_des):,}")
     print("=" * 65)
     return meta, df_des
 
 
 def load_or_build(force=False) -> tuple:
     if not force and CACHE_META.exists() and CACHE_DES.exists():
-        print("  Cargando caché deserción genérica…", end=" ", flush=True)
+        print("  Cargando caché no profesionalización…", end=" ", flush=True)
         t0 = time.time()
         try:
             with open(CACHE_META, "rb") as f:
@@ -695,7 +695,7 @@ def load_or_build(force=False) -> tuple:
                 return build_cache()
             df_des = pd.read_parquet(CACHE_DES)
             print(f"OK ({time.time()-t0:.1f}s) · cohortes={sorted(meta.keys())} "
-                  f"· desertores={len(df_des):,}")
+                  f"· no profesionalizados={len(df_des):,}")
             return meta, df_des
         except Exception as e:
             print(f"ERROR: {e} — reconstruyendo…")
@@ -1058,9 +1058,9 @@ layout = html.Div(style={
     # ── Header ──────────────────────────────────────────────────
     html.Div([
         html.Div([
-            html.Div("ICFES · DESERCIÓN ACADÉMICA · COHORTES 2010–2018", style={
+            html.Div("ICFES · NO PROFESIONALIZACIÓN · COHORTES 2010–2018", style={
                 "color": ACCENT1, "fontSize": "11px", "letterSpacing": "4px"}),
-            html.H1("Deserción Estudiantil por Cohorte", style={
+            html.H1("No profesionalización por Cohorte", style={
                 "margin": "4px 0 0 0", "fontSize": "28px", "fontWeight": "700",
                 "color": TEXT_MAIN, "letterSpacing": "-0.5px"}),
             html.Div(
@@ -1154,7 +1154,7 @@ layout = html.Div(style={
         ),
     ]),
 
-    # ── Desertores por estrato ───────────────────────────────────
+    # ── No profesionalizados por estrato ───────────────────────────────────
     card([
         section_title("Falta de coincidencias por estrato socioeconómico"),
         g("des-fig-estrato", "340px"),
@@ -1313,7 +1313,7 @@ layout = html.Div(style={
     ], extra_style={"borderColor": ACCENT4 + "44"}),
 
     # ── Footer ───────────────────────────────────────────────────
-    html.Div("ICFES · Análisis de deserción · Cohortes 2010–2018",
+    html.Div("ICFES · Análisis de no profesionalización · Cohortes 2010–2018",
              style={"textAlign": "center", "color": TEXT_MUTED, "fontSize": "10px",
                     "letterSpacing": "2px", "paddingTop": "20px",
                     "borderTop": f"1px solid {BORDER}"}),
@@ -1426,7 +1426,7 @@ def update_cohorte(year, grupo):
             kpi_box("Presentaron Saber 11", f"{total:,}",       ACCENT1, total_sub),
             kpi_box("No coincidentes",      f"{desertores:,}",  ACCENT3, "Sin llave en Saber Pro"),
             kpi_box("Coincidentes",         f"{continuaron:,}", ACCENT2, "Con llave en Saber Pro"),
-            kpi_box("Tasa de transición",   f"{tasa_t:.2f}%",   ACCENT2, "Coincidentes / Total"),
+            kpi_box("Tasa de profesionalización",   f"{tasa_t:.2f}%",   ACCENT2, "Coincidentes / Total"),
         ),
         # Indicador general (no depende del filtro)
         html.Div(

@@ -1,0 +1,46 @@
+{
+  "forma1": {
+    "mod_razona_cuantitat_punt_norm_sbpro": {
+      "mae": 0.07127322256565094,
+      "rmse": 0.09151420291058197,
+      "r2": 0.24327856302261353
+    },
+    "mod_lectura_critica_punt_norm_sbpro": {
+      "mae": 0.06260605901479721,
+      "rmse": 0.08307412808331219,
+      "r2": 0.3639730215072632
+    },
+    "mod_competen_ciudada_punt_norm_sbpro": {
+      "mae": 0.07264107465744019,
+      "rmse": 0.09612216975028842,
+      "r2": 0.3059747815132141
+    },
+    "mod_ingles_punt_norm_sbpro": {
+      "mae": 0.04953271523118019,
+      "rmse": 0.07075159074099492,
+      "r2": 0.604503870010376
+    }
+  },
+  "forma2": {
+    "mod_razona_cuantitat_punt_norm_sbpro": {
+      "mae": 0.06887282431125641,
+      "rmse": 0.08884991488433866,
+      "r2": 0.28669869899749756
+    },
+    "mod_lectura_critica_punt_norm_sbpro": {
+      "mae": 0.06268586963415146,
+      "rmse": 0.08256081671301928,
+      "r2": 0.3718087077140808
+    },
+    "mod_competen_ciudada_punt_norm_sbpro": {
+      "mae": 0.07249226421117783,
+      "rmse": 0.09509343941569183,
+      "r2": 0.3207506537437439
+    },
+    "mod_ingles_punt_norm_sbpro": {
+      "mae": 0.05005210265517235,
+      "rmse": 0.0717067403700676,
+      "r2": 0.5937533378601074
+    }
+  }
+}
