@@ -1,7 +1,8 @@
 from dash import Dash, html, dcc, page_container, page_registry
 import dash
+from Services.report_engine import STORE_IDS
 
-app = Dash(__name__, use_pages=True)
+app = Dash(__name__, use_pages=True, suppress_callback_exceptions=True)
 
 app.index_string = """<!DOCTYPE html>
 <html>
@@ -123,6 +124,13 @@ app.layout = html.Div(style={"background": BG, "minHeight": "100vh"}, children=[
         delay_hide=200,
         children=page_container,
     ),
+
+    # ── Stores globales del Generador de Reportes ──
+    # Uno por página fuente. Viven en el layout global (siempre presentes en el
+    # DOM) para que cada página escriba en ellos sus filtros/KPIs/figuras/tablas
+    # y la página "Generador de Reportes" pueda leerlos como State entre páginas
+    # (espejo de filtros en vivo, vía storage de sesión).
+    *[dcc.Store(id=store_id, storage_type="session") for store_id, _ in STORE_IDS],
 ])
 
 print("Páginas registradas:", list(dash.page_registry.keys()))

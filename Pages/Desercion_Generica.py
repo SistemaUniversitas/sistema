@@ -40,6 +40,10 @@ import plotly.graph_objects as go
 from dash import html, dcc, Input, Output, callback
 import dash
 
+# Motor de reportes (vive en desarrolloInterfaz/Services).
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+import Services.report_engine as RE
+
 warnings.filterwarnings("ignore")
 
 # ─────────────────────────────────────────────────────────────
@@ -1337,6 +1341,7 @@ layout = html.Div(style={
     Output("des-incert-std-info",  "children"),
     Output("des-header-count",     "children"),
     Output("des-header-scope",     "children"),
+    Output("report-store-desercion", "data"),
     Input("des-f-cohorte",         "value"),
     Input("des-f-grupo",           "value"),
 )
@@ -1354,6 +1359,7 @@ def update_cohorte(year, grupo):
         empty_fig(), empty_fig(), empty_fig(), empty_fig(),
         *_empty_incert,
         "", "—", "",
+        RE.publish_payload("desercion", {}, {}),
     )
 
     is_all = (year == ALL_VALUE)
@@ -1420,6 +1426,21 @@ def update_cohorte(year, grupo):
     else:
         trend_val, tcolor, trend_sub = "—", TEXT_MUTED, "Serie insuficiente"
 
+    # ── Items base para el Generador de Reportes ──
+    rep_filters = {
+        "Cohorte": header_scope,
+        "Grupo de referencia": grupo_lbl if grupo else "General (5 años)",
+    }
+
+    def _rep_kpi_items():
+        return {
+            "kpi_total":   RE.kpi("Presentaron Saber 11", f"{total:,}"),
+            "kpi_nocoinc": RE.kpi("No coincidentes", f"{desertores:,}"),
+            "kpi_coinc":   RE.kpi("Coincidentes", f"{continuaron:,}"),
+            "kpi_tasa":    RE.kpi("Tasa de profesionalización", f"{tasa_t:.2f}%"),
+            "kpi_trend":   RE.kpi("Tendencia", trend_val),
+        }
+
     kpis = html.Div([
         # KPIs del filtro seleccionado
         row(
@@ -1444,9 +1465,13 @@ def update_cohorte(year, grupo):
     fig_trend_delta = trend_delta_fig(sel_year)
 
     if _DF_DES.empty or "anio_cohorte" not in _DF_DES.columns:
+        rep_items = _rep_kpi_items()
+        rep_items["fig_trend_line"] = RE.figure("Tendencia de no coincidencia por cohorte", fig_trend_line)
+        rep_items["fig_trend_delta"] = RE.figure("Variación interanual", fig_trend_delta)
+        rep_payload = RE.publish_payload("desercion", rep_filters, rep_items)
         return (kpis, fig_trend_line, fig_trend_delta,
                 empty_fig(), empty_fig(), empty_fig(), empty_fig(),
-                *_empty_incert, std_info, header_count, header_scope)
+                *_empty_incert, std_info, header_count, header_scope, rep_payload)
 
     d = _DF_DES if is_all else _DF_DES[_DF_DES["anio_cohorte"] == year]
 
@@ -1537,7 +1562,18 @@ def update_cohorte(year, grupo):
     fig_incert_anos = incert_anos_fig(pairs, std_years)
     fig_incert_desv = incert_desviacion_fig(pairs, std_sems, std_years)
 
+    rep_items = _rep_kpi_items()
+    rep_items["fig_trend_line"]  = RE.figure("Tendencia de no coincidencia por cohorte", fig_trend_line)
+    rep_items["fig_trend_delta"] = RE.figure("Variación interanual", fig_trend_delta)
+    rep_items["fig_estrato"]     = RE.figure("No coincidentes por estrato", fig_estrato)
+    rep_items["fig_naturaleza"]  = RE.figure("Naturaleza del colegio", fig_naturaleza)
+    rep_items["fig_area"]        = RE.figure("Zona del colegio", fig_area)
+    rep_items["fig_depto"]       = RE.figure("Top 10 departamentos", fig_depto)
+    rep_items["fig_incert_anos"] = RE.figure("Radio de incertidumbre · año de presentación", fig_incert_anos)
+    rep_items["fig_incert_desv"] = RE.figure("Radio de incertidumbre · desviación", fig_incert_desv)
+    rep_payload = RE.publish_payload("desercion", rep_filters, rep_items)
+
     return (kpis, fig_trend_line, fig_trend_delta,
             fig_estrato, fig_naturaleza, fig_area, fig_depto,
             incert_kpis, fig_incert_anos, fig_incert_desv,
-            std_info, header_count, header_scope)
+            std_info, header_count, header_scope, rep_payload)

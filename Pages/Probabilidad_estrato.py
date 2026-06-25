@@ -1,9 +1,15 @@
+import sys
 import warnings
+from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
 from dash import html, dcc, dash_table, Input, Output, State, callback
 import dash
+
+# Motor de reportes (vive en desarrolloInterfaz/Services).
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+import Services.report_engine as RE
 
 warnings.filterwarnings("ignore")
 
@@ -278,6 +284,7 @@ def on_year_selected(year):
 
 @callback(
     Output("prob-results", "children"),
+    Output("report-store-probestrato", "data"),
     Input("prob-calc-btn", "n_clicks"),
     State("prob-year",  "value"),
     State("prob-padre", "value"),
@@ -285,11 +292,12 @@ def on_year_selected(year):
     prevent_initial_call=True,
 )
 def compute_probabilities(_n, year, padre_val, madre_val):
+    _empty = RE.publish_payload("probestrato", {}, {})
     if year is None or year not in _cache:
-        return _alert("⚠  Selecciona primero un año para cargar los datos.")
+        return _alert("⚠  Selecciona primero un año para cargar los datos."), _empty
 
     if not padre_val and not madre_val:
-        return _alert("⚠  Selecciona al menos uno de los niveles educativos.")
+        return _alert("⚠  Selecciona al menos uno de los niveles educativos."), _empty
 
     df = _cache[year]
 
@@ -303,7 +311,7 @@ def compute_probabilities(_n, year, padre_val, madre_val):
     n_total = len(estrato_series)
 
     if n_total == 0:
-        return _alert("⚠  No se encontraron estudiantes con esa combinación.")
+        return _alert("⚠  No se encontraron estudiantes con esa combinación."), _empty
 
     counts = estrato_series.astype(str).value_counts().sort_index()
     probs  = (counts / n_total * 100).round(2)
@@ -378,7 +386,26 @@ def compute_probabilities(_n, year, padre_val, madre_val):
         ],
     }
 
-    return html.Div([
+    # ── Payload para el Generador de Reportes ──
+    rep_filters = {
+        "Año": str(year),
+        "Educación del padre": padre_val or "No especificado",
+        "Educación de la madre": madre_val or "No especificado",
+        "Registros analizados": f"{n_total:,}",
+    }
+    rep_items = {
+        "kpi_best": RE.kpi("Estrato más probable", f"Estrato {best_estrato}"),
+        "kpi_prob": RE.kpi("Probabilidad máxima", f"{best_prob:.1f}%"),
+        "kpi_n":    RE.kpi("Registros analizados", f"{n_total:,}"),
+        "fig_prob": RE.figure("Probabilidad por estrato", fig),
+        "table_prob": RE.table(
+            "Tabla de probabilidades", ["Estrato", "Casos", "Probabilidad (%)"],
+            [[r["Estrato"], r["Casos"], r["Probabilidad (%)"]]
+             for r in result_df.to_dict("records")]),
+    }
+    rep_payload = RE.publish_payload("probestrato", rep_filters, rep_items)
+
+    results_div = html.Div([
         # Condición analizada
         card([
             section_title("Condición analizada"),
@@ -445,6 +472,7 @@ def compute_probabilities(_n, year, padre_val, madre_val):
             ),
         ]),
     ])
+    return results_div, rep_payload
 
 
 def _alert(msg: str):

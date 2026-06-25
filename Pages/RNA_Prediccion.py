@@ -15,6 +15,7 @@ de MAE Forma 1 vs Forma 2.
 """
 
 import json
+import sys
 import warnings
 from pathlib import Path
 
@@ -24,6 +25,10 @@ import plotly.graph_objects as go
 from dash import html, dcc, dash_table, Input, Output, callback
 import dash
 import psycopg2
+
+# Motor de reportes (vive en desarrolloInterfaz/Services).
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+import Services.report_engine as RE
 
 warnings.filterwarnings("ignore")
 
@@ -403,6 +408,7 @@ else:
     Output("rna-dist",    "figure"),
     Output("rna-resid",   "figure"),
     Output("rna-tabla",   "children"),
+    Output("report-store-rna", "data"),
     Input("rna-forma",  "value"),
     Input("rna-modulo", "value"),
     Input("rna-split",  "value"),
@@ -415,7 +421,7 @@ def actualizar(forma, modulo, split, institucion):
     if len(sub) == 0 or col_real not in sub.columns or col_pred not in sub.columns:
         vacio = go.Figure().update_layout(**LAYOUT_BASE, height=360)
         msg = _alert("⚠  No hay datos para esta combinación de filtros.")
-        return msg, vacio, vacio, vacio, msg
+        return msg, vacio, vacio, vacio, msg, RE.publish_payload("rna", {}, {})
 
     # Eliminar filas con NaN en el par real/pred (puede ocurrir si el join
     # con postgres no encontró match para global_pred)
@@ -424,7 +430,7 @@ def actualizar(forma, modulo, split, institucion):
     if len(sub_valid) == 0:
         vacio = go.Figure().update_layout(**LAYOUT_BASE, height=360)
         msg = _alert("⚠  No hay datos válidos para esta combinación de filtros.")
-        return msg, vacio, vacio, vacio, msg
+        return msg, vacio, vacio, vacio, msg, RE.publish_payload("rna", {}, {})
 
     real = sub_valid[col_real].to_numpy(dtype="float64")
     pred = sub_valid[col_pred].to_numpy(dtype="float64")
@@ -539,7 +545,28 @@ def actualizar(forma, modulo, split, institucion):
                                  "backgroundColor": BG}],
     )
 
-    return kpis, scatter, dist, resid, tabla
+    # ── Payload para el Generador de Reportes ──
+    rep_filters = {
+        "Forma": forma, "Módulo": MODULO_LABEL.get(modulo, modulo),
+        "Split": split, "Institución": institucion,
+    }
+    rep_items = {
+        "kpi_n":     RE.kpi("Estudiantes", f"{len(sub_valid):,}"),
+        "kpi_mae":   RE.kpi("MAE", f"{mae:.4f}"),
+        "kpi_rmse":  RE.kpi("RMSE", f"{rmse:.4f}"),
+        "kpi_r2":    RE.kpi("R²", f"{r2:.4f}"),
+        "kpi_sesgo": RE.kpi("Sesgo medio", f"{sesgo:+.4f}"),
+        "fig_scatter": RE.figure("Real vs Predicho", scatter),
+        "fig_dist":    RE.figure("Distribución real vs predicho", dist),
+        "fig_resid":   RE.figure("Distribución de residuales", resid),
+    }
+    if filas:
+        _cols = ["Módulo", "MAE", "RMSE", "Sesgo"]
+        rep_items["table_metrics"] = RE.table(
+            "Métricas por módulo", _cols, [[f[c] for c in _cols] for f in filas])
+    rep_payload = RE.publish_payload("rna", rep_filters, rep_items)
+
+    return kpis, scatter, dist, resid, tabla, rep_payload
 
 
 @callback(
