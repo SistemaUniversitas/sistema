@@ -714,12 +714,37 @@ _META, _DF_DES = load_or_build(force="--rebuild" in sys.argv)
 # ─────────────────────────────────────────────────────────────
 
 def _trendline(years, values):
-    """Devuelve los valores de la recta de regresión lineal sobre la serie."""
+    """Devuelve la recta de regresión lineal sobre la serie y su bondad de ajuste."""
     if len(years) < 2:
         return None
     xs   = np.array(years, dtype=float)
-    coef = np.polyfit(xs, np.array(values, dtype=float), 1)
-    return coef[0], (coef[0] * xs + coef[1]).tolist()   # (pendiente pp/año, recta)
+    ys   = np.array(values, dtype=float)
+    coef = np.polyfit(xs, ys, 1)
+    fitted  = coef[0] * xs + coef[1]
+    ss_res  = np.sum((ys - fitted) ** 2)
+    ss_tot  = np.sum((ys - ys.mean()) ** 2)
+    r2      = 1 - ss_res / ss_tot if ss_tot > 0 else 1.0
+    return coef[0], fitted.tolist(), r2   # (pendiente pp/año, recta, R²)
+
+
+def _r2_annotations(r2_a, color_a, r2_b, color_b):
+    """Anotaciones flotantes con el R² de cada recta de tendencia (no coincidencia / coincidencia)."""
+    anns = []
+    if r2_a is not None:
+        anns.append(dict(
+            xref="paper", yref="paper", x=0.01, y=0.99, xanchor="left", yanchor="top",
+            text=f"R² no coincidencia: {r2_a:.3f}",
+            showarrow=False, font=dict(color=color_a, size=11),
+            bgcolor="rgba(13,17,23,0.7)",
+        ))
+    if r2_b is not None:
+        anns.append(dict(
+            xref="paper", yref="paper", x=0.01, y=0.91, xanchor="left", yanchor="top",
+            text=f"R² coincidencia: {r2_b:.3f}",
+            showarrow=False, font=dict(color=color_b, size=11),
+            bgcolor="rgba(13,17,23,0.7)",
+        ))
+    return anns
 
 
 def _global_trend():
@@ -728,7 +753,7 @@ def _global_trend():
         return None
     years = sorted(_META.keys())
     tasas = [_META[y]["tasa_desercion"] for y in years]
-    slope, _ = _trendline(years, tasas)
+    slope, _, _ = _trendline(years, tasas)
     return {
         "slope":       slope,                  # puntos porcentuales por año
         "first_year":  years[0],
@@ -790,6 +815,10 @@ def _overview_figs():
             font=dict(color=TEXT_MAIN, size=10),
             bgcolor="rgba(0,0,0,0)",
             orientation="h", yanchor="bottom", y=1.02, x=0,
+        ),
+        annotations=_r2_annotations(
+            tl[2] if tl else None, ACCENT3,
+            tl_coinc[2] if tl_coinc else None, ACCENT2,
         ),
     )
 
@@ -897,6 +926,10 @@ def trend_line_fig(selected_year):
             font=dict(color=TEXT_MAIN, size=10),
             bgcolor="rgba(0,0,0,0)",
             orientation="h", yanchor="bottom", y=1.02, x=0,
+        ),
+        annotations=_r2_annotations(
+            tl[2] if tl else None, ACCENT1,
+            tl_coinc[2] if tl_coinc else None, ACCENT2,
         ),
     )
     return fig
