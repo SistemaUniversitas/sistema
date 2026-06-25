@@ -246,6 +246,23 @@ REPORT_SECTIONS = [
             {"id": "table_prob", "label": "Tabla de probabilidades",  "kind": "table"},
         ],
     },
+    {
+        # Sección de la Landing Ejecutiva. `hidden` la excluye del catálogo del
+        # Generador (la landing arma su propio PDF directamente) y no tiene store.
+        "id": "resumen",
+        "title": "Resumen Ejecutivo",
+        "hidden": True,
+        "items": [
+            {"id": "kpi_registros",     "label": "Registros analizados",        "kind": "kpi"},
+            {"id": "kpi_universidades", "label": "Universidades",               "kind": "kpi"},
+            {"id": "kpi_programas",      "label": "Programas académicos",        "kind": "kpi"},
+            {"id": "kpi_tasa",           "label": "Tasa de profesionalización",  "kind": "kpi"},
+            {"id": "kpi_mejor",          "label": "Mejor universidad (Global)",  "kind": "kpi"},
+            {"id": "fig_top_uni",        "label": "Top 10 universidades por Puntaje Global", "kind": "figure"},
+            {"id": "fig_dist_global",    "label": "Distribución del Puntaje Global",         "kind": "figure"},
+            {"id": "fig_tendencia",      "label": "Tendencia de profesionalización por cohorte", "kind": "figure"},
+        ],
+    },
 ]
 
 # KPIs que son ESTIMADORES (estimaciones estadísticas / de modelo), no simples
@@ -261,7 +278,10 @@ _ITEM_BY_KEY = {
     f'{s["id"]}::{it["id"]}': {**it, "section_id": s["id"], "section_title": s["title"]}
     for s in REPORT_SECTIONS for it in s["items"]
 }
-STORE_IDS = [(s["store"], s["id"]) for s in REPORT_SECTIONS]
+STORE_IDS = [(s["store"], s["id"]) for s in REPORT_SECTIONS if s.get("store")]
+# Secciones visibles en el catálogo del Generador (excluye las ocultas, p. ej.
+# la del Resumen Ejecutivo, que arma su propio PDF).
+VISIBLE_SECTIONS = [s for s in REPORT_SECTIONS if not s.get("hidden")]
 
 
 # Saneador de glifos: la fuente estándar Helvetica del PDF no incluye flechas,
@@ -353,9 +373,9 @@ def table(label, columns, rows):
     return {"kind": "table", "label": label,
             "columns": list(columns), "rows": [list(r) for r in rows]}
 
-def publish_payload(section_id, filters, items):
+def publish_payload(section_id, filters, items, title=None):
     return {"section_id": section_id,
-            "title": _SECTION_BY_ID.get(section_id, {}).get("title", section_id),
+            "title": title or _SECTION_BY_ID.get(section_id, {}).get("title", section_id),
             "filters": {k: ("—" if v in (None, "", []) else v) for k, v in (filters or {}).items()},
             "items": items or {},
             "ts": datetime.now().isoformat(timespec="seconds")}
@@ -1001,25 +1021,43 @@ def _auto_conclusions(payloads, selected_keys):
 # ─────────────────────────────────────────────────────────────────────────────
 # API principal
 # ─────────────────────────────────────────────────────────────────────────────
+def _meta_for(key, payloads):
+    """Metadatos de un ítem: del catálogo si existe, o derivados del payload
+    (permite secciones/ítems dinámicos, p. ej. los de la Landing Ejecutiva)."""
+    if key in _ITEM_BY_KEY:
+        return _ITEM_BY_KEY[key]
+    sid, _, iid = key.partition("::")
+    pl = payloads.get(sid) or {}
+    it = (pl.get("items") or {}).get(iid)
+    if it is None:
+        return None
+    return {"id": iid, "label": it.get("label", iid), "kind": it.get("kind", "figure"),
+            "section_id": sid,
+            "section_title": pl.get("title") or _SECTION_BY_ID.get(sid, {}).get("title", sid)}
+
+
+def _section_title(sid, payloads):
+    pl = payloads.get(sid) or {}
+    return pl.get("title") or _SECTION_BY_ID.get(sid, {}).get("title", sid)
+
+
 def build_report_pdf(config, payloads, selected_keys):
     """Construye el PDF (estructura IEEE) y devuelve los bytes."""
     s = _styles()
     date_str = config.get("date_str") or datetime.now().strftime("%d/%m/%Y")
     title = config.get("title", "Reporte Institucional")
 
-    # Items realmente disponibles, en el orden del catálogo.
+    # Items realmente disponibles, en el orden recibido (selected_keys).
     available = []
-    for sec in REPORT_SECTIONS:
-        for it in sec["items"]:
-            key = f'{sec["id"]}::{it["id"]}'
-            if key in selected_keys:
-                pl = payloads.get(sec["id"]) or {}
-                if it["id"] in (pl.get("items") or {}):
-                    available.append(key)
+    for key in selected_keys:
+        sid, _, iid = key.partition("::")
+        pl = payloads.get(sid) or {}
+        if iid in (pl.get("items") or {}):
+            available.append(key)
 
     secs_used = []
     for key in available:
-        sid = _ITEM_BY_KEY[key]["section_id"]
+        sid = _meta_for(key, payloads)["section_id"]
         if sid not in secs_used:
             secs_used.append(sid)
 
@@ -1062,7 +1100,7 @@ def build_report_pdf(config, payloads, selected_keys):
     story.append(SectionHeading(f"{n}. Introducción", s["h1"], 0, "sec-intro"))
     story.append(_rule())
     n_comp = len(available)
-    src_titles = _safe(", ".join(_SECTION_BY_ID[x]["title"] for x in secs_used)) or "—"
+    src_titles = _safe(", ".join(_section_title(x, payloads) for x in secs_used)) or "—"
     story.append(Paragraph(
         f"Este informe presenta un análisis comparativo y predictivo de la evolución de "
         f"competencias universitarias a partir de las pruebas Saber 11 y Saber Pro. El "
@@ -1094,7 +1132,7 @@ def build_report_pdf(config, payloads, selected_keys):
         "recalcular consultas, garantizando consistencia entre la pantalla y el documento. Los "
         "puntajes se manejan en su escala normalizada (0–1) salvo indicación contraria.", s["body"]))
     for sid in secs_used:
-        story.append(Paragraph(_safe(_SECTION_BY_ID[sid]["title"]), s["h3"]))
+        story.append(Paragraph(_safe(_section_title(sid, payloads)), s["h3"]))
         if sid in _SECTION_METHOD:
             story.append(Paragraph(_SECTION_METHOD[sid], s["body"]))
         filt = (payloads.get(sid) or {}).get("filters") or {}
@@ -1108,15 +1146,15 @@ def build_report_pdf(config, payloads, selected_keys):
     story.append(SectionHeading(f"{n}. Resultados", s["h1"], 0, "sec-result"))
     story.append(_rule())
     res_sources = [sid for sid in secs_used
-                   if any(_ITEM_BY_KEY[k]["kind"] in ("figure", "figure_multi", "table")
-                          and _ITEM_BY_KEY[k]["section_id"] == sid for k in available)]
+                   if any(_meta_for(k, payloads)["kind"] in ("figure", "figure_multi", "table")
+                          and _meta_for(k, payloads)["section_id"] == sid for k in available)]
     if not res_sources:
         story.append(Paragraph("No se seleccionaron gráficos ni tablas para este reporte.", s["body"]))
     for i, sid in enumerate(res_sources, 1):
-        story.append(SectionHeading(f"{n}.{i} {_SECTION_BY_ID[sid]['title']}", s["h2"],
+        story.append(SectionHeading(f"{n}.{i} {_section_title(sid, payloads)}", s["h2"],
                                     1, f"res-{sid}"))
         for key in available:
-            meta = _ITEM_BY_KEY[key]
+            meta = _meta_for(key, payloads)
             if meta["section_id"] != sid:
                 continue
             it = payloads[sid]["items"][meta["id"]]

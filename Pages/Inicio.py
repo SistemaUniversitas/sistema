@@ -242,6 +242,19 @@ layout = html.Div(className="ld-root", children=[
         ]),
     ]),
 
+    # ── Banner destacado: Vista Ejecutiva ──
+    dcc.Link(href="/resumen-ejecutivo", className="ld-exec-banner ld-fade",
+             style={"animationDelay": "0.04s"}, children=[
+        html.Div("📊", className="ld-exec-icon"),
+        html.Div(className="ld-exec-text", children=[
+            html.Div("Vista Ejecutiva", className="ld-exec-title"),
+            html.Div("Resumen General · Dashboard Principal — la información más "
+                     "importante y consolidada del sistema en una sola página.",
+                     className="ld-exec-sub"),
+        ]),
+        html.Div("Abrir  →", className="ld-exec-go"),
+    ]),
+
     # ── Resumen general ──
     _section("Resumen general", "Cifras de la plataforma",
              html.Div(className="ld-stats", children=[
