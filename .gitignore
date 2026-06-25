@@ -2,6 +2,7 @@
 __pycache__/
 
 #Entorno virtual
+.venv/
 venv/
 
 # Archivos antiguos de prueba
