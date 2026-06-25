@@ -26,6 +26,10 @@ from dash import html, dcc, dash_table, Input, Output, callback
 from dash.dash_table.Format import Format, Scheme
 import dash
 
+# Motor de reportes (vive en desarrolloInterfaz/Services).
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+import Services.report_engine as RE
+
 warnings.filterwarnings("ignore")
 
 # ─────────────────────────────────────────────────────────────
@@ -320,6 +324,27 @@ def _radar_placeholder(msg):
 # ─────────────────────────────────────────────────────────────
 _DF = load_or_build(force="--rebuild" in sys.argv)
 
+
+def _clean_inst_name(s):
+    """Normaliza nombres de instituciones con comillas de escape CSV duplicadas,
+    p. ej. '\"\"\"ESCUELA ... \"\"\"\"JULIO GARAVITO\"\"\"\"-BOGOTÁ D.C.\"\"\"'
+    → 'ESCUELA ... JULIO GARAVITO-BOGOTÁ D.C.'."""
+    s = str(s)
+    while '""' in s:                      # colapsa secuencias de comillas a una
+        s = s.replace('""', '"')
+    s = s.strip().strip('"').strip()      # quita comillas envolventes
+    s = s.replace('"', ' ')               # comillas internas restantes → espacio
+    s = " ".join(s.split())               # colapsa espacios
+    return s.replace(" -", "-")           # une "NOMBRE -CIUDAD" → "NOMBRE-CIUDAD"
+
+
+# Limpieza única tras cargar el cache: deja nombres legibles en dropdowns,
+# agrupaciones, tablas, rankings y en el payload del Generador de Reportes.
+if "inst_nombre_institucion" in _DF.columns:
+    _DF["inst_nombre_institucion"] = (
+        _DF["inst_nombre_institucion"].astype(str).map(_clean_inst_name))
+
+
 def _opt_list(series, sort=True):
     vals = pd.Series(series).dropna().astype(str).str.strip()
     vals = vals[vals != ""].unique().tolist()
@@ -521,6 +546,7 @@ def _update_univ_options(depto, grupo, prgm, univ_value):
     Output("interuniv-kpi-best-calc", "children"),
     Output("interuniv-kpi-diff", "children"),
     Output("interuniv-kpi-count", "children"),
+    Output("report-store-interuniv", "data"),
     Input("interuniv-f-depto", "value"),
     Input("interuniv-f-grupo", "value"),
     Input("interuniv-f-prgm", "value"),
@@ -541,8 +567,10 @@ def _update_all(depto, grupo, prgm, univ):
     if len(agg_all):
         bg_uni, bg_val = agg_all["punt_global_norm"].idxmax(), agg_all["punt_global_norm"].max()
         bc_uni, bc_val = agg_all["punt_global_calc_norm"].idxmax(), agg_all["punt_global_calc_norm"].max()
-        kpi_best_global = kpi_box("Mejor Universidad (Global)", f"{bg_uni} · {bg_val:.2f}", ACCENT2)
-        kpi_best_calc   = kpi_box("Mejor Universidad (Global Calculado)", f"{bc_uni} · {bc_val:.2f}", ACCENT4)
+        v_best_global = f"{bg_uni} · {bg_val:.2f}"
+        v_best_calc   = f"{bc_uni} · {bc_val:.2f}"
+        kpi_best_global = kpi_box("Mejor Universidad (Global)", v_best_global, ACCENT2)
+        kpi_best_calc   = kpi_box("Mejor Universidad (Global Calculado)", v_best_calc, ACCENT4)
 
         rank_g = agg_all["punt_global_norm"].sort_values(ascending=False).head(20)
         rank_c = agg_all["punt_global_calc_norm"].sort_values(ascending=False).head(20)
@@ -551,20 +579,47 @@ def _update_all(depto, grupo, prgm, univ):
         rank_calc_data = [{"Posición": i + 1, "Universidad": u, "Puntaje": round(float(v), 2)}
                           for i, (u, v) in enumerate(rank_c.items())]
     else:
+        v_best_global = v_best_calc = "—"
         kpi_best_global = kpi_box("Mejor Universidad (Global)", "—")
         kpi_best_calc   = kpi_box("Mejor Universidad (Global Calculado)", "—")
         rank_global_data, rank_calc_data = [], []
 
-    kpi_count = kpi_box("Universidades Comparadas", str(len(selected)), ACCENT1)
+    v_count = str(len(selected))
+    kpi_count = kpi_box("Universidades Comparadas", v_count, ACCENT1)
+
+    # Filtros activos (legibles) y items base disponibles para el reporte.
+    rep_filters = {
+        "Departamento": depto or "Todos",
+        "Grupo de referencia": grupo or "Todos",
+        "Programa": prgm or "Todos",
+        "Universidades seleccionadas": list(selected),
+    }
+
+    def _rank_table(label, data):
+        return RE.table(label, ["Posición", "Universidad", "Puntaje"],
+                        [[r["Posición"], r["Universidad"], r["Puntaje"]] for r in data])
+
+    def _base_items():
+        items = {
+            "kpi_best_global": RE.kpi("Mejor Universidad (Global)", v_best_global),
+            "kpi_best_calc":   RE.kpi("Mejor Universidad (Global Calculado)", v_best_calc),
+            "kpi_count":       RE.kpi("Universidades Comparadas", v_count),
+        }
+        if rank_global_data:
+            items["table_rank_global"] = _rank_table("Ranking de Universidades (Global)", rank_global_data)
+        if rank_calc_data:
+            items["table_rank_calc"] = _rank_table("Ranking de Universidades (Global Calculado)", rank_calc_data)
+        return items
 
     if len(selected) < MIN_UNIV:
         msg = empty_fig(f"Selecciona entre {MIN_UNIV} y {MAX_UNIV} universidades para comparar")
         radar_children = _radar_placeholder(
             f"Selecciona entre {MIN_UNIV} y {MAX_UNIV} universidades para comparar")
         kpi_diff = kpi_box("Diferencia Máxima", "—", ACCENT3)
+        rep_payload = RE.publish_payload("interuniv", rep_filters, _base_items())
         return (msg, radar_children, [], [{"name": "Universidad", "id": "Universidad"}], ZEBRA,
                 rank_global_data, rank_calc_data,
-                kpi_best_global, kpi_best_calc, kpi_diff, kpi_count)
+                kpi_best_global, kpi_best_calc, kpi_diff, kpi_count, rep_payload)
 
     dsel = d[d["inst_nombre_institucion"].isin(selected)]
     mat = (dsel.groupby("inst_nombre_institucion")[COMP_COLS].mean()).reindex(selected)
@@ -573,15 +628,18 @@ def _update_all(depto, grupo, prgm, univ):
         msg = empty_fig("Sin datos para las universidades/filtros seleccionados")
         radar_children = _radar_placeholder("Sin datos para las universidades/filtros seleccionados")
         kpi_diff = kpi_box("Diferencia Máxima", "—", ACCENT3)
+        rep_payload = RE.publish_payload("interuniv", rep_filters, _base_items())
         return (msg, radar_children, [], [{"name": "Universidad", "id": "Universidad"}], ZEBRA,
                 rank_global_data, rank_calc_data,
-                kpi_best_global, kpi_best_calc, kpi_diff, kpi_count)
+                kpi_best_global, kpi_best_calc, kpi_diff, kpi_count, rep_payload)
 
     global_vals = mat["punt_global_norm"].dropna()
     if len(global_vals):
         diff_val = float(global_vals.max() - global_vals.min())
-        kpi_diff = kpi_box("Diferencia Máxima", f"{diff_val:.2f}", ACCENT3)
+        v_diff = f"{diff_val:.2f}"
+        kpi_diff = kpi_box("Diferencia Máxima", v_diff, ACCENT3)
     else:
+        v_diff = "—"
         kpi_diff = kpi_box("Diferencia Máxima", "—", ACCENT3)
 
     # ── Sección 1: gráfico de barras agrupadas ──
@@ -608,6 +666,7 @@ def _update_all(depto, grupo, prgm, univ):
     # mismo aunque la última fila quede a medias, garantizando radares idénticos
     # sin importar cuántos haya.
     radar_cards = []
+    radar_pair_figs, radar_pair_caps = [], []
     for uniA, uniB in itertools.combinations(universidades, 2):
         fig_pair = go.Figure()
         for i, uni in enumerate((uniA, uniB)):
@@ -627,6 +686,8 @@ def _update_all(depto, grupo, prgm, univ):
             legend=dict(font=dict(size=11, color=TEXT_MUTED), bgcolor="rgba(0,0,0,0)",
                         orientation="h", yanchor="bottom", y=-0.18,
                         xanchor="center", x=0.5))
+        radar_pair_figs.append(fig_pair)
+        radar_pair_caps.append(f"{uniA}  vs  {uniB}")
         radar_cards.append(card([
             html.Div(f"{uniA}  vs  {uniB}", style={
                 "color": ACCENT1, "fontFamily": "'IBM Plex Mono', monospace",
@@ -672,9 +733,22 @@ def _update_all(depto, grupo, prgm, univ):
 
     table_data = df_table.to_dict("records")
 
+    # ── Payload completo para el Generador de Reportes ──
+    rep_items = _base_items()
+    rep_items["kpi_diff"] = RE.kpi("Diferencia Máxima", v_diff)
+    rep_items["fig_bar"] = RE.figure("Gráfico de Barras por Competencia", fig_bar)
+    if radar_pair_figs:
+        rep_items["fig_radar"] = RE.figure_multi(
+            "Radares Comparativos por Pareja", radar_pair_figs, radar_pair_caps)
+    exec_cols = ["Universidad", *COMP_LABELS]
+    rep_items["table_exec"] = RE.table(
+        "Tabla Comparativa Ejecutiva", exec_cols,
+        [[row.get(c) for c in exec_cols] for row in table_data])
+    rep_payload = RE.publish_payload("interuniv", rep_filters, rep_items)
+
     return (fig_bar, radar_children, table_data, columns_def, style_cond,
             rank_global_data, rank_calc_data,
-            kpi_best_global, kpi_best_calc, kpi_diff, kpi_count)
+            kpi_best_global, kpi_best_calc, kpi_diff, kpi_count, rep_payload)
 
 
 if __name__ == "__main__":

@@ -27,6 +27,10 @@ import plotly.graph_objects as go
 from dash import html, dcc, dash_table, Input, Output, State, callback
 import dash
 
+# Motor de reportes (vive en desarrolloInterfaz/Services).
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+import Services.report_engine as RE
+
 warnings.filterwarnings("ignore")
 
 # ─────────────────────────────────────────────────────────────
@@ -638,6 +642,27 @@ def dd(ddid, label, options, value=None, multi=False, placeholder="Todos"):
 # ─────────────────────────────────────────────────────────────
 _DF = load_or_build(force="--rebuild" in sys.argv)
 
+
+def _clean_inst_name(s):
+    """Normaliza nombres de instituciones con comillas de escape CSV duplicadas
+    ('\"\"\"ESCUELA ... \"\"\"\"JULIO GARAVITO\"\"\"\"-BOGOTÁ D.C.\"\"\"' →
+    'ESCUELA ... JULIO GARAVITO-BOGOTÁ D.C.')."""
+    s = str(s)
+    while '""' in s:
+        s = s.replace('""', '"')
+    s = s.strip().strip('"').strip()
+    s = s.replace('"', ' ')
+    s = " ".join(s.split())
+    return s.replace(" -", "-")
+
+
+# Limpieza única tras cargar el cache (afecta dropdowns, "Top instituciones",
+# filtro USB/sede y el payload del Generador de Reportes).
+if "inst_nombre_institucion" in _DF.columns:
+    _DF["inst_nombre_institucion"] = (
+        _DF["inst_nombre_institucion"].astype(str).map(_clean_inst_name))
+
+
 def _opt_list(series, sort=True):
     vals = pd.Series(series).dropna().astype(str).str.strip()
     vals = vals[vals != ""].unique().tolist()
@@ -1151,6 +1176,7 @@ _FIG_OUTPUTS = [
     Output("unif-filter-summary", "children"),
     Output("unif-kpi-colombianos", "children"),
     Output("unif-kpi-extranjeros", "children"),
+    Output("report-store-socio", "data"),
     Input("unif-f-year",    "value"),
     Input("unif-f-periodo", "value"),
     Input("unif-f-genero",  "value"),
@@ -1184,7 +1210,8 @@ def update_all(anio, periodo, genero, estrato, depto, mcpio, prgm, usb_value, se
     if total == 0:
         empty = empty_fig()
         empties = [empty] * len(_FIG_OUTPUTS)
-        return (*empties, "0", resumen + " · sin registros", None, None)
+        return (*empties, "0", resumen + " · sin registros", None, None,
+                RE.publish_payload("socio", {}, {}))
 
     def vc(col, top=None, sort_index=False):
         if col not in d.columns: return pd.Series(dtype=int)
@@ -1390,5 +1417,89 @@ def update_all(anio, periodo, genero, estrato, depto, mcpio, prgm, usb_value, se
     assert len(figs) == len(_FIG_OUTPUTS), (len(figs), len(_FIG_OUTPUTS))
     kpi_col = kpi_box("Estudiantes colombianos", f"{col_count:,}", ACCENT2)
     kpi_ext = kpi_box("Estudiantes extranjeros",  f"{ext_count:,}", ACCENT3)
+
+    # ── Payload para el Generador de Reportes ──
+    rep_filters = {
+        "Año": anio or "Todos", "Periodo": periodo or "Todos",
+        "Género": genero or "Todos", "Estrato": estrato or "Todos",
+        "Departamento": depto or "Todos", "Municipio": mcpio or "Todos",
+        "Programa": prgm or "Todos", "Solo USB": "Sí" if usb_only else "No",
+        "Sede": sede or "—",
+    }
+    figmap = dict(zip(_FIG_OUTPUTS, figs))
+    # item_id → (figure_output_id, etiqueta, descripción breve del análisis).
+    # En el mismo orden visual de la página; el motor exporta cualquier figura.
+    _socio_figs = {
+        "fig_genero":     ("unif-fig-genero",    "Distribución por género",
+                           "Participación de estudiantes por género."),
+        "fig_nac":        ("unif-fig-nac-resumen", "Nacionalidad (Colombianos vs Extranjeros)",
+                           "Composición de la población por nacionalidad."),
+        "fig_edad":       ("unif-fig-edad",      "Distribución por edad",
+                           "Frecuencia de estudiantes por edad."),
+        "fig_extranjeros":("unif-fig-extranjeros", "Top 25 nacionalidades extranjeras",
+                           "Nacionalidades extranjeras más frecuentes."),
+        "fig_top10_depto_r":("unif-fig-top10-depto-reside", "Top 10 departamentos de residencia",
+                           "Departamentos de residencia con más estudiantes."),
+        "fig_top10_mcpio_r":("unif-fig-top10-mcpio-reside", "Top 10 municipios de residencia",
+                           "Municipios de residencia con más estudiantes."),
+        "fig_top10_depto_p":("unif-fig-top10-depto-present", "Top 10 departamentos de presentación",
+                           "Departamentos donde se presentó la prueba."),
+        "fig_top10_mcpio_p":("unif-fig-top10-mcpio-present", "Top 10 municipios de presentación",
+                           "Municipios donde se presentó la prueba."),
+        "fig_area":       ("unif-fig-area-reside", "Área de residencia",
+                           "Distribución por zona (urbana/rural) de residencia."),
+        "fig_semestre":   ("unif-fig-semestre",  "Semestre cursando",
+                           "Semestre que cursaban los evaluados."),
+        "fig_caracter":   ("unif-fig-caracter",  "Tipo de institución (Pública/Privada/Especial)",
+                           "Carácter académico de la institución."),
+        "fig_nivel":      ("unif-fig-nivel-prgm", "Nivel del programa",
+                           "Nivel académico del programa cursado."),
+        "fig_metodo":     ("unif-fig-metodo",    "Método del programa",
+                           "Modalidad/metodología del programa."),
+        "fig_nucleo":     ("unif-fig-nucleo",    "Top 25 núcleos de pregrado",
+                           "Núcleos básicos de conocimiento más frecuentes."),
+        "fig_edu_padre":  ("unif-fig-edu-padre", "Educación del padre",
+                           "Nivel educativo del padre."),
+        "fig_edu_madre":  ("unif-fig-edu-madre", "Educación de la madre",
+                           "Nivel educativo de la madre."),
+        "fig_ocu_padre":  ("unif-fig-ocu-padre", "Ocupación del padre",
+                           "Ocupación del padre."),
+        "fig_ocu_madre":  ("unif-fig-ocu-madre", "Ocupación de la madre",
+                           "Ocupación de la madre."),
+        "fig_computador": ("unif-fig-computador", "Tiene computador",
+                           "Tenencia de computador en el hogar."),
+        "fig_internet":   ("unif-fig-internet",  "Tiene internet",
+                           "Acceso a internet en el hogar."),
+        "fig_estrato":    ("unif-fig-estrato",   "Distribución por estrato",
+                           "Estrato socioeconómico de la vivienda."),
+        "fig_inse":       ("unif-fig-inse",      "INSE individual",
+                           "Índice de nivel socioeconómico individual."),
+        "fig_nse":        ("unif-fig-nse",       "Nivel socioeconómico (NSE)",
+                           "Nivel socioeconómico agregado."),
+        "fig_origen":     ("unif-fig-origen",    "Origen (valores detallados)",
+                           "Origen de los recursos (detallado)."),
+        "fig_grupo":      ("unif-fig-grupo-ref", "Grupo de referencia",
+                           "Grupo de referencia del programa."),
+        "fig_top_inst":   ("unif-fig-top-inst",  "Top instituciones",
+                           "Instituciones con más estudiantes."),
+        "fig_top_prgm":   ("unif-fig-top-prgm",  "Top programas",
+                           "Programas con más estudiantes."),
+        "fig_pago":       ("unif-fig-pago-totales", "Formas de pago",
+                           "Frecuencia de cada forma de pago de la matrícula."),
+        "fig_pago_hm":    ("unif-fig-pago-heatmap", "Co-ocurrencia entre tipos de pago",
+                           "Combinaciones de formas de pago que aparecen juntas."),
+        "fig_estrato_pago":("unif-fig-estrato-pago", "Estrato × Tipo de pago",
+                           "Relación entre estrato y forma de pago."),
+    }
+    rep_items = {
+        "kpi_total": RE.kpi("Total estudiantes", f"{total:,}"),
+        "kpi_col":   RE.kpi("Estudiantes colombianos", f"{col_count:,}"),
+        "kpi_ext":   RE.kpi("Estudiantes extranjeros", f"{ext_count:,}"),
+    }
+    for item_id, (fid, label, desc) in _socio_figs.items():
+        if fid in figmap:
+            rep_items[item_id] = RE.figure(label, figmap[fid], desc=desc)
+    rep_payload = RE.publish_payload("socio", rep_filters, rep_items)
+
     return (*figs, f"{total:,}", resumen + f" · {total:,} registros",
-            kpi_col, kpi_ext)
+            kpi_col, kpi_ext, rep_payload)

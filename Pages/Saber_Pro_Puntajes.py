@@ -22,6 +22,10 @@ import plotly.graph_objects as go
 from dash import html, dcc, Input, Output, callback
 import dash
 
+# Motor de reportes (vive en desarrolloInterfaz/Services).
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+import Services.report_engine as RE
+
 warnings.filterwarnings("ignore")
 
 # ─────────────────────────────────────────────────────────────
@@ -1189,6 +1193,7 @@ _FIG_OUTPUTS = [
     *[Output(fid, "figure") for fid in _FIG_OUTPUTS],
     Output("punt-kpi-total", "children"),
     Output("punt-filter-summary", "children"),
+    Output("report-store-puntajes-mod", "data"),
     Input("punt-f-year",    "value"),
     Input("punt-f-periodo", "value"),
     Input("punt-f-genero",  "value"),
@@ -1228,7 +1233,8 @@ def update_puntajes(anio, periodo, genero, estrato, depto, mcpio,
 
     if total == 0:
         empties = [empty_fig()] * len(_FIG_OUTPUTS)
-        return (*empties, "0", resumen + " · sin registros")
+        return (*empties, "0", resumen + " · sin registros",
+                RE.publish_payload("puntajes_mod", {}, {}))
 
     fig_p_raz = hist_fig(d.get("mod_razona_cuantitat_punt"),
                          xlab="Puntaje", color=ACCENT1)
@@ -1260,7 +1266,26 @@ def update_puntajes(anio, periodo, genero, estrato, depto, mcpio,
         fig_p_ing, fig_p_esc, fig_p_glo,
         fig_d_raz, fig_d_lec, fig_d_ciu, fig_d_ing, fig_d_esc,
     ]
-    return (*figs, f"{total:,}", resumen + f" · {total:,} registros")
+
+    # ── Payload para el Generador de Reportes (puntajes/niveles por módulo) ──
+    _punt_lbls = ["Razonamiento cuantitativo", "Lectura crítica", "Competencias ciudadanas",
+                  "Inglés", "Comunicación escrita", "Puntaje global"]
+    rep_filters = {
+        "Año": anio or "Todos", "Periodo": periodo or "Todos", "Género": genero or "Todos",
+        "Estrato": estrato or "Todos", "Departamento": depto or "Todos",
+        "Municipio": mcpio or "Todos", "Solo USB": "Sí" if usb_only else "No",
+        "Sede": sede or "—", "Grupo de referencia": grupo or "Todos",
+    }
+    rep_items = {
+        "kpi_total": RE.kpi("Total registros", f"{total:,}"),
+        "fig_punt": RE.figure_multi("Puntajes por módulo", figs[0:6], _punt_lbls,
+                                    desc="Distribución de puntajes por módulo."),
+        "fig_desem": RE.figure_multi("Nivel de desempeño por módulo", figs[6:11], _punt_lbls[:5],
+                                     desc="Distribución de niveles de desempeño por módulo."),
+    }
+    rep_payload = RE.publish_payload("puntajes_mod", rep_filters, rep_items)
+
+    return (*figs, f"{total:,}", resumen + f" · {total:,} registros", rep_payload)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1341,10 +1366,32 @@ def _corr_table(df):
         "borderRadius": "8px", "overflow": "hidden"})
 
 
+def _corr_table_data(df):
+    """Igual que _corr_table pero devuelve (columnas, filas) para el reporte PDF."""
+    cols = ["Módulo", "n pares", "Pearson r", "Spearman ρ"]
+    rows = []
+    for sbpro_col, sb11_col, label_short, _ in MODULE_PAIRS:
+        if sbpro_col in df.columns and sb11_col in df.columns:
+            x = pd.to_numeric(df[sb11_col], errors="coerce")
+            y = pd.to_numeric(df[sbpro_col], errors="coerce")
+            mask = x.notna() & y.notna()
+            n = int(mask.sum())
+            if n >= 2:
+                r_s = f"{float(x[mask].corr(y[mask], method='pearson')):.3f}"
+                rho_s = f"{_spearman(x[mask], y[mask]):.3f}"
+            else:
+                r_s, rho_s = "—", "—"
+        else:
+            n, r_s, rho_s = 0, "—", "—"
+        rows.append([label_short, f"{n:,}", r_s, rho_s])
+    return cols, rows
+
+
 @callback(
     *[Output(fid, "figure") for fid in _PAREADO_FIG_OUTPUTS],
     Output("punt-pareado-summary",    "children"),
     Output("punt-pareado-corr-table", "children"),
+    Output("report-store-puntajes-par", "data"),
     Input("punt-f-year",    "value"),
     Input("punt-f-periodo", "value"),
     Input("punt-f-genero",  "value"),
@@ -1362,7 +1409,8 @@ def update_pareado(anio, periodo, genero, estrato, depto, mcpio,
     if _DF_PAREADO.empty:
         empties = [empty_fig("Cache pareado no disponible")] * len(_PAREADO_FIG_OUTPUTS)
         msg = "Cache pareado no construido · revisa conexión a Postgres y la tabla `llaves`."
-        return (*empties, msg, html.Div("Sin datos.", style={"color": TEXT_MUTED}))
+        return (*empties, msg, html.Div("Sin datos.", style={"color": TEXT_MUTED}),
+                RE.publish_payload("puntajes_par", {}, {}))
 
     usb_only = bool(usb_value) and "on" in usb_value
     d = _apply_filters(_DF_PAREADO, anio, periodo, genero, estrato, depto, mcpio,
@@ -1374,7 +1422,8 @@ def update_pareado(anio, periodo, genero, estrato, depto, mcpio,
 
     if n_pairs == 0:
         empties = [empty_fig()] * len(_PAREADO_FIG_OUTPUTS)
-        return (*empties, summary + " · sin registros", _corr_table(d))
+        return (*empties, summary + " · sin registros", _corr_table(d),
+                RE.publish_payload("puntajes_par", {}, {}))
 
     scatters, quints, deltas, trends = [], [], [], []
     for sbpro_col, sb11_col, label_short, label_long in MODULE_PAIRS_CHARTS:
@@ -1393,8 +1442,32 @@ def update_pareado(anio, periodo, genero, estrato, depto, mcpio,
 
     eng_fig = english_transition_fig(d)
 
+    # ── Payload para el Generador de Reportes (comparativa pareada) ──
+    _par_lbls = [lbl for _, _, lbl, _ in MODULE_PAIRS_CHARTS]
+    rep_filters = {
+        "Año": anio or "Todos", "Periodo": periodo or "Todos", "Género": genero or "Todos",
+        "Estrato": estrato or "Todos", "Departamento": depto or "Todos",
+        "Municipio": mcpio or "Todos", "Solo USB": "Sí" if usb_only else "No",
+        "Sede": sede or "—", "Grupo de referencia": grupo or "Todos",
+    }
+    ccols, crows = _corr_table_data(d)
+    rep_items = {
+        "table_corr": RE.table("Relación de puntajes Saber 11 ↔ Saber Pro", ccols, crows),
+        "fig_trend": RE.figure_multi("Tendencia por cohorte por módulo", trends, _par_lbls,
+                                     desc="Evolución del puntaje por cohorte (SB 11 vs SB Pro)."),
+        "fig_delta": RE.figure_multi("Distribución del Δ (Saber Pro − Saber 11)", deltas, _par_lbls,
+                                     desc="Distribución de la diferencia de puntajes por módulo."),
+        "fig_scatter": RE.figure_multi("Detalle pareado por módulo (densidad)", scatters, _par_lbls,
+                                       desc="Relación SB 11 ↔ SB Pro por estudiante (densidad)."),
+        "fig_quint": RE.figure_multi("Matriz de transición por quintiles", quints, _par_lbls,
+                                     desc="Transición entre quintiles de SB 11 y SB Pro."),
+        "fig_eng": RE.figure("Transición de nivel de desempeño en inglés", eng_fig,
+                             desc="Transición de nivel de inglés SB 11 → SB Pro."),
+    }
+    rep_payload = RE.publish_payload("puntajes_par", rep_filters, rep_items)
+
     return (*scatters, *quints, *deltas, *trends, eng_fig,
-            summary, _corr_table(d))
+            summary, _corr_table(d), rep_payload)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1406,6 +1479,7 @@ def update_pareado(anio, periodo, genero, estrato, depto, mcpio,
     Output("punt-aporte-kpi-global",     "children"),
     Output("punt-aporte-kpi-mejor-comp", "children"),
     Output("punt-aporte-kpi-mejor-anio", "children"),
+    Output("report-store-puntajes", "data"),
     Input("punt-f-year",    "value"),
     Input("punt-f-periodo", "value"),
     Input("punt-f-genero",  "value"),
@@ -1423,7 +1497,8 @@ def update_aporte(anio, periodo, genero, estrato, depto, mcpio,
     if _DF_PAREADO.empty:
         vacio = kpi_box("Aporte Global Promedio", "—")
         return (empty_fig("Cache pareado no disponible"), vacio,
-                kpi_box("Mayor Aporte", "—"), kpi_box("Mejor Año", "—"))
+                kpi_box("Mayor Aporte", "—"), kpi_box("Mejor Año", "—"),
+                RE.publish_payload("puntajes", {}, {}))
 
     usb_only = bool(usb_value) and "on" in usb_value
     d = _apply_filters(_DF_PAREADO, anio, periodo, genero, estrato, depto, mcpio,
@@ -1433,19 +1508,31 @@ def update_aporte(anio, periodo, genero, estrato, depto, mcpio,
     fig = aporte_heatmap_fig(mat)
     g_prom, mejor_comp, mejor_anio = aporte_kpis(mat)
 
+    v_global = f"{g_prom:+.1f} puntos" if g_prom is not None else "—"
+    v_comp = f"{mejor_comp[0]} ({mejor_comp[1]:+.1f})" if mejor_comp[0] is not None else "—"
+    v_anio = f"{mejor_anio[0]} ({mejor_anio[1]:+.1f})" if mejor_anio[0] is not None else "—"
+
     kpi_global = kpi_box(
-        "Aporte Global Promedio",
-        f"{g_prom:+.1f} puntos" if g_prom is not None else "—",
+        "Aporte Global Promedio", v_global,
         ACCENT2 if (g_prom is not None and g_prom >= 0) else ACCENT3)
 
-    kpi_comp = kpi_box(
-        "Mayor Aporte",
-        f"{mejor_comp[0]} ({mejor_comp[1]:+.1f})" if mejor_comp[0] is not None else "—",
-        ACCENT4)
+    kpi_comp = kpi_box("Mayor Aporte", v_comp, ACCENT4)
+    kpi_anio = kpi_box("Mejor Año", v_anio, ACCENT5)
 
-    kpi_anio = kpi_box(
-        "Mejor Año",
-        f"{mejor_anio[0]} ({mejor_anio[1]:+.1f})" if mejor_anio[0] is not None else "—",
-        ACCENT5)
+    # ── Payload para el Generador de Reportes ──
+    rep_filters = {
+        "Año": anio or "Todos", "Periodo": periodo or "Todos",
+        "Género": genero or "Todos", "Estrato": estrato or "Todos",
+        "Departamento": depto or "Todos", "Municipio": mcpio or "Todos",
+        "Solo USB": "Sí" if usb_only else "No", "Sede": sede or "—",
+        "Grupo de referencia": grupo or "Todos",
+    }
+    rep_items = {
+        "kpi_aporte_global": RE.kpi("Aporte Global Promedio", v_global),
+        "kpi_aporte_comp":   RE.kpi("Mejor Competencia (Aporte)", v_comp),
+        "kpi_aporte_anio":   RE.kpi("Mejor Año (Aporte)", v_anio),
+        "fig_aporte":        RE.figure("Aporte Institucional por Competencia y Año", fig),
+    }
+    rep_payload = RE.publish_payload("puntajes", rep_filters, rep_items)
 
-    return fig, kpi_global, kpi_comp, kpi_anio
+    return fig, kpi_global, kpi_comp, kpi_anio, rep_payload
