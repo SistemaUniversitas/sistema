@@ -119,7 +119,7 @@ layout = html.Div(style={"padding": "28px 36px", "fontFamily": MONO,
                 sublabel("Activa los elementos de cada página que deseas incluir. "
                          "Una página aparece como «sin datos» hasta que la visites "
                          "y apliques filtros."),
-                html.Div([_section_catalog(sec) for sec in RE.REPORT_SECTIONS]),
+                html.Div([_section_catalog(sec) for sec in RE.VISIBLE_SECTIONS]),
             ]),
         ]),
 
@@ -182,14 +182,14 @@ layout = html.Div(style={"padding": "28px 36px", "fontFamily": MONO,
 # Estado de fuentes + badge por sección (lee todos los stores globales).
 @callback(
     [Output("genrep-sources", "children")]
-    + [Output(f'genrep-status-{s["id"]}', "children") for s in RE.REPORT_SECTIONS]
-    + [Output(f'genrep-status-{s["id"]}', "style") for s in RE.REPORT_SECTIONS],
+    + [Output(f'genrep-status-{s["id"]}', "children") for s in RE.VISIBLE_SECTIONS]
+    + [Output(f'genrep-status-{s["id"]}', "style") for s in RE.VISIBLE_SECTIONS],
     [Input(store_id, "data") for store_id, _ in RE.STORE_IDS],
 )
 def _sources_status(*store_datas):
     rows, badges, styles = [], [], []
     for (store_id, sec_id), data in zip(RE.STORE_IDS, store_datas):
-        sec = next(s for s in RE.REPORT_SECTIONS if s["id"] == sec_id)
+        sec = next(s for s in RE.VISIBLE_SECTIONS if s["id"] == sec_id)
         has = bool(data and data.get("items"))
         if has:
             badges.append("● con datos")
@@ -219,12 +219,12 @@ def _sources_status(*store_datas):
 
 # Cancelar / limpiar: vacía todos los checklists.
 @callback(
-    [Output(f'genrep-check-{s["id"]}', "value") for s in RE.REPORT_SECTIONS],
+    [Output(f'genrep-check-{s["id"]}', "value") for s in RE.VISIBLE_SECTIONS],
     Input("genrep-cancel", "n_clicks"),
     prevent_initial_call=True,
 )
 def _clear(_n):
-    return [[] for _ in RE.REPORT_SECTIONS]
+    return [[] for _ in RE.VISIBLE_SECTIONS]
 
 
 # Generar el PDF.
@@ -232,7 +232,7 @@ def _clear(_n):
     Output("genrep-download", "data"),
     Output("genrep-status", "children"),
     Input("genrep-generate", "n_clicks"),
-    [State(f'genrep-check-{s["id"]}', "value") for s in RE.REPORT_SECTIONS]
+    [State(f'genrep-check-{s["id"]}', "value") for s in RE.VISIBLE_SECTIONS]
     + [State(store_id, "data") for store_id, _ in RE.STORE_IDS]
     + [State("genrep-title", "value"),
        State("genrep-subtitle", "value"),
@@ -240,7 +240,7 @@ def _clear(_n):
     prevent_initial_call=True,
 )
 def _generate(_n, *vals):
-    n_sec = len(RE.REPORT_SECTIONS)
+    n_sec = len(RE.VISIBLE_SECTIONS)
     check_values = vals[:n_sec]
     store_values = vals[n_sec:2 * n_sec]
     title, subtitle, user = vals[2 * n_sec:2 * n_sec + 3]
@@ -249,7 +249,7 @@ def _generate(_n, *vals):
     selected = set()
     for cv in check_values:
         selected.update(cv or [])
-    ordered = [f'{s["id"]}::{it["id"]}' for s in RE.REPORT_SECTIONS
+    ordered = [f'{s["id"]}::{it["id"]}' for s in RE.VISIBLE_SECTIONS
                for it in s["items"] if f'{s["id"]}::{it["id"]}' in selected]
 
     if not ordered:
