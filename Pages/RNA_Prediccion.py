@@ -55,8 +55,8 @@ DATOS_DIR = DASHBOARD_DIR / "Datos6"
 if not DATOS_DIR.exists():
     DATOS_DIR = DASHBOARD_DIR.parent / "Datos"
 
-ARCHIVO_PRED = DATOS_DIR / "predicciones_v2.parquet"
-ARCHIVO_MET  = DATOS_DIR / "metricas_v2.json"
+ARCHIVO_PRED = DATOS_DIR / "predicciones_v3_5.parquet"
+ARCHIVO_MET  = DATOS_DIR / "metricas_v3_5_ensemble.json"
 ARCHIVO_META = DATOS_DIR / "metadatos.json"
 
 # Módulos: id interno (en parquet) -> etiqueta legible
@@ -166,13 +166,13 @@ def _cargar_global_pred(pred: pd.DataFrame, meta: dict) -> pd.DataFrame:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT column_name FROM information_schema.columns
-                    WHERE table_name = 'predicciones_saberpro_v2'
+                    WHERE table_name = 'predicciones_saberpro_v3_5'
                     ORDER BY ordinal_position
                 """)
                 cols_pg = [r[0] for r in cur.fetchall()]
 
             if "global_pred" not in cols_pg:
-                print("  ⚠  'global_pred' no existe en predicciones_saberpro_v2.")
+                print("  ⚠  'global_pred' no existe en predicciones_saberpro_v3_5.")
                 return pred
 
             id_sbpro = meta.get("id_sbpro", "estu_consecutivo_sbpro")
@@ -186,7 +186,7 @@ def _cargar_global_pred(pred: pd.DataFrame, meta: dict) -> pd.DataFrame:
             if key_col and key_col in pred.columns:
                 with conn.cursor() as cur:
                     cur.execute(
-                        f'SELECT "{key_col}", global_pred FROM predicciones_saberpro_v2'
+                        f'SELECT "{key_col}", global_pred FROM predicciones_saberpro_v3_5'
                     )
                     rows = cur.fetchall()
                 df_pg = pd.DataFrame(rows, columns=[key_col, "global_pred"])
@@ -194,7 +194,7 @@ def _cargar_global_pred(pred: pd.DataFrame, meta: dict) -> pd.DataFrame:
             else:
                 # Fallback posicional si no hay clave común
                 with conn.cursor() as cur:
-                    cur.execute("SELECT global_pred FROM predicciones_saberpro_v2")
+                    cur.execute("SELECT global_pred FROM predicciones_saberpro_v3_5")
                     vals = [r[0] for r in cur.fetchall()]
                 if len(vals) == len(pred):
                     pred = pred.copy()
@@ -392,6 +392,12 @@ else:
             dcc.Graph(id="rna-formas", config={"displayModeBar": False}),
         ]),
 
+        card([
+            section_title("Comparación Forma 1 vs Forma 2 · MSE por módulo (test)"),
+            sublabel("La diferencia cuantifica el aporte del contexto socioeconómico."),
+            dcc.Graph(id="rna-formas-mse", config={"displayModeBar": False}),
+        ]),
+
         # ── Tabla de métricas ──
         card([
             section_title("Métricas por módulo (test)"),
@@ -437,7 +443,8 @@ def actualizar(forma, modulo, split, institucion):
     err  = real - pred
 
     mae  = float(np.mean(np.abs(err)))
-    rmse = float(np.sqrt(np.mean(err ** 2)))
+    mse  = float(np.mean(err ** 2))
+    rmse = float(np.sqrt(mse))
     # R²
     ss_res = float(np.sum(err ** 2))
     ss_tot = float(np.sum((real - real.mean()) ** 2))
@@ -448,6 +455,7 @@ def actualizar(forma, modulo, split, institucion):
     kpis = row(
         kpi_box("Estudiantes", f"{len(sub_valid):,}", ACCENT1),
         kpi_box("MAE", f"{mae:.4f}", ACCENT2),
+        kpi_box("MSE", f"{mse:.4f}", ACCENT5),
         kpi_box("RMSE", f"{rmse:.4f}", ACCENT5),
         kpi_box("R²", f"{r2:.4f}", ACCENT4),
         kpi_box("Sesgo medio", f"{sesgo:+.4f}", ACCENT3),
@@ -524,12 +532,13 @@ def actualizar(forma, modulo, split, institucion):
         filas.append({
             "Módulo": lbl,
             "MAE": round(float(np.mean(np.abs(e))), 4),
+            "MSE": round(float(np.mean(e ** 2)), 4),
             "RMSE": round(float(np.sqrt(np.mean(e ** 2))), 4),
             "Sesgo": round(float(np.mean(e)), 4),
         })
     tabla = dash_table.DataTable(
         data=filas,
-        columns=[{"name": c, "id": c} for c in ["Módulo", "MAE", "RMSE", "Sesgo"]],
+        columns=[{"name": c, "id": c} for c in ["Módulo", "MAE", "MSE", "RMSE", "Sesgo"]],
         style_table={"overflowX": "auto", "border": f"1px solid {BORDER}",
                      "borderRadius": "8px"},
         style_header={"backgroundColor": BG, "color": ACCENT1,
@@ -569,71 +578,103 @@ def actualizar(forma, modulo, split, institucion):
     return kpis, scatter, dist, resid, tabla, rep_payload
 
 
+# Módulos sin global (los que pueden venir de metricas.json)
+_MODULOS_BASE = [(mid, lbl) for mid, lbl in MODULOS if mid != "global"]
+
+
+def _metrica_por_modulo(forma, metric_key):
+    """Calcula MAE o MSE por módulo (test) para una forma dada.
+    Intenta leer desde metricas.json (con fallback mse = rmse**2 si el
+    campo 'mse' no existe); el módulo global siempre se calcula desde
+    el parquet porque metricas.json no lo incluye."""
+    met = _cache["met"]
+    key = f"forma{forma}"
+    valores = []
+    sub_test = _cache["pred"]
+    sub_test = sub_test[(sub_test["forma"] == forma) & (sub_test["split"] == "test")]
+
+    from_json = False
+    if met and key in met:
+        m = met[key]
+        target_keys = [k for k in m.keys() if k != "global"]
+        if len(target_keys) == len(_MODULOS_BASE):
+            for tk in target_keys:
+                stats = m[tk]
+                if metric_key in stats:
+                    valores.append(stats[metric_key])
+                elif metric_key == "mse" and "rmse" in stats:
+                    valores.append(stats["rmse"] ** 2)
+                else:
+                    valores.append(np.nan)
+            from_json = True
+
+    if not from_json:
+        for mid, _ in _MODULOS_BASE:
+            cr, cp = f"{mid}_real", f"{mid}_pred"
+            if cr not in sub_test.columns or cp not in sub_test.columns:
+                valores.append(np.nan)
+            else:
+                e = sub_test[cr].to_numpy("float64") - sub_test[cp].to_numpy("float64")
+                if len(e) == 0:
+                    valores.append(np.nan)
+                elif metric_key == "mae":
+                    valores.append(float(np.mean(np.abs(e))))
+                else:
+                    valores.append(float(np.mean(e ** 2)))
+
+    # Global siempre desde el parquet (metricas.json no lo incluye)
+    if "global_real" in sub_test.columns and "global_pred" in sub_test.columns:
+        g_mask = sub_test["global_real"].notna() & sub_test["global_pred"].notna()
+        g_r = sub_test.loc[g_mask, "global_real"].to_numpy("float64")
+        g_p = sub_test.loc[g_mask, "global_pred"].to_numpy("float64")
+        if len(g_r) == 0:
+            valores.append(np.nan)
+        elif metric_key == "mae":
+            valores.append(float(np.mean(np.abs(g_r - g_p))))
+        else:
+            valores.append(float(np.mean((g_r - g_p) ** 2)))
+    else:
+        valores.append(np.nan)
+
+    return valores
+
+
+def _fmt_metric(v):
+    return f"{v:.3f}" if not np.isnan(v) else "N/D"
+
+
+def _grafico_comparacion(metric_key, titulo_y):
+    labels = [lbl for _, lbl in MODULOS]
+    val_f1 = _metrica_por_modulo(1, metric_key)
+    val_f2 = _metrica_por_modulo(2, metric_key)
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=labels, y=val_f1, name="Forma 1 · puntajes",
+                         marker_color=ACCENT1,
+                         text=[_fmt_metric(v) for v in val_f1], textposition="outside"))
+    fig.add_trace(go.Bar(x=labels, y=val_f2, name="Forma 2 · + socioec.",
+                         marker_color=ACCENT2,
+                         text=[_fmt_metric(v) for v in val_f2], textposition="outside"))
+    fig.update_layout(
+        **LAYOUT_BASE, height=380, barmode="group",
+        xaxis=dict(gridcolor="rgba(0,0,0,0)"),
+        yaxis=dict(title=titulo_y, gridcolor=BORDER),
+        legend=dict(orientation="h", y=1.1, x=0),
+    )
+    return fig
+
+
 @callback(
     Output("rna-formas", "figure"),
     Input("rna-split", "value"),  # disparador; las métricas guardadas son de test
 )
 def comparar_formas(_split):
-    """Compara MAE por módulo entre Forma 1 y Forma 2 usando metricas.json
-    (calculado sobre test). Global se calcula siempre desde el parquet."""
-    met = _cache["met"]
-    labels = [lbl for _, lbl in MODULOS]
-    # Módulos sin global (los que pueden venir de metricas.json)
-    MODULOS_BASE = [(mid, lbl) for mid, lbl in MODULOS if mid != "global"]
+    return _grafico_comparacion("mae", "MAE (test)")
 
-    def mae_por_modulo(forma):
-        key = f"forma{forma}"
-        valores = []
-        sub_test = _cache["pred"]
-        sub_test = sub_test[(sub_test["forma"] == forma) & (sub_test["split"] == "test")]
 
-        # 1) Intentar métricas por módulo desde metricas.json
-        from_json = False
-        if met and key in met:
-            m = met[key]
-            target_keys = [k for k in m.keys() if k != "global"]
-            if len(target_keys) == len(MODULOS_BASE):
-                for tk in target_keys:
-                    valores.append(m[tk].get("mae", np.nan))
-                from_json = True
-
-        if not from_json:
-            for mid, _ in MODULOS_BASE:
-                cr, cp = f"{mid}_real", f"{mid}_pred"
-                if cr not in sub_test.columns or cp not in sub_test.columns:
-                    valores.append(np.nan)
-                else:
-                    e = sub_test[cr].to_numpy("float64") - sub_test[cp].to_numpy("float64")
-                    valores.append(float(np.mean(np.abs(e))) if len(e) else np.nan)
-
-        # 2) Global siempre desde el parquet (metricas.json no lo incluye)
-        if "global_real" in sub_test.columns and "global_pred" in sub_test.columns:
-            g_mask = sub_test["global_real"].notna() & sub_test["global_pred"].notna()
-            g_r = sub_test.loc[g_mask, "global_real"].to_numpy("float64")
-            g_p = sub_test.loc[g_mask, "global_pred"].to_numpy("float64")
-            valores.append(float(np.mean(np.abs(g_r - g_p))) if len(g_r) else np.nan)
-        else:
-            valores.append(np.nan)
-
-        return valores
-
-    mae_f1 = mae_por_modulo(1)
-    mae_f2 = mae_por_modulo(2)
-
-    fig = go.Figure()
-    def _fmt(v):
-        return f"{v:.3f}" if not np.isnan(v) else "N/D"
-
-    fig.add_trace(go.Bar(x=labels, y=mae_f1, name="Forma 1 · puntajes",
-                         marker_color=ACCENT1,
-                         text=[_fmt(v) for v in mae_f1], textposition="outside"))
-    fig.add_trace(go.Bar(x=labels, y=mae_f2, name="Forma 2 · + socioec.",
-                         marker_color=ACCENT2,
-                         text=[_fmt(v) for v in mae_f2], textposition="outside"))
-    fig.update_layout(
-        **LAYOUT_BASE, height=380, barmode="group",
-        xaxis=dict(gridcolor="rgba(0,0,0,0)"),
-        yaxis=dict(title="MAE (test)", gridcolor=BORDER),
-        legend=dict(orientation="h", y=1.1, x=0),
-    )
-    return fig
+@callback(
+    Output("rna-formas-mse", "figure"),
+    Input("rna-split", "value"),  # disparador; las métricas guardadas son de test
+)
+def comparar_formas_mse(_split):
+    return _grafico_comparacion("mse", "MSE (test)")
