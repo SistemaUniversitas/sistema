@@ -1,0 +1,116 @@
+/* ============================================================
+   Navbar global + Login — identidad USB (oscuro + naranja)
+   ============================================================ */
+
+:root {
+  --bg:      #0D1117;
+  --card:    #161B22;
+  --card2:   #1C2230;
+  --border:  #30363D;
+  --text:    #E6EDF3;
+  --muted:   #8B949E;
+  --orange:  #E8730C;
+  --orange2: #ED7D31;
+}
+
+/* ---------- Navbar ---------- */
+.nv-bar {
+  position: sticky; top: 0; z-index: 200;
+  display: flex; align-items: center; gap: 18px;
+  padding: 10px 26px;
+  background: rgba(22, 27, 34, 0.92);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  font-family: 'IBM Plex Mono', monospace;
+}
+.nv-bar::before {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+  background: linear-gradient(90deg, var(--orange), transparent 55%);
+}
+.nv-brand {
+  display: flex; align-items: center; flex: 0 0 auto;
+  padding: 4px 14px 4px 0; border-right: 1px solid var(--border);
+  text-decoration: none;
+}
+.nv-logo { height: 30px; display: block; background: #fff; border-radius: 5px; padding: 3px 6px; }
+
+.nv-links {
+  display: flex; align-items: center; gap: 6px;
+  flex: 1 1 auto; overflow-x: auto; scrollbar-width: thin;
+  padding-bottom: 2px;
+}
+.nv-link {
+  white-space: nowrap; text-decoration: none;
+  color: var(--muted); font-size: 12px; letter-spacing: 0.6px;
+  padding: 8px 13px; border-radius: 8px;
+  border: 1px solid transparent;
+  transition: color .15s ease, background .15s ease, border-color .15s ease;
+}
+.nv-link:hover { color: var(--text); background: rgba(255,255,255,0.04); border-color: var(--border); }
+.nv-link-active { color: #fff; background: rgba(232,115,12,0.16); border-color: var(--orange2); }
+.nv-link-exec {
+  color: var(--orange2); font-weight: 700;
+  border-color: rgba(232,115,12,0.45); background: rgba(232,115,12,0.08);
+}
+.nv-link-exec:hover { color: #fff; background: var(--orange); border-color: var(--orange); }
+
+.nv-right { display: flex; align-items: center; gap: 12px; flex: 0 0 auto;
+  padding-left: 14px; border-left: 1px solid var(--border); }
+.nv-user { color: #3FB950; font-size: 11px; letter-spacing: 0.5px; white-space: nowrap; }
+.nv-logout {
+  background: transparent; color: var(--muted); cursor: pointer;
+  border: 1px solid var(--border); border-radius: 8px;
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 1px;
+  padding: 7px 14px; transition: all .15s ease;
+}
+.nv-logout:hover { color: #fff; border-color: #C23B22; background: rgba(194,59,34,0.18); }
+
+/* ---------- Login ---------- */
+.lg-overlay { position: fixed; inset: 0; z-index: 1000; }
+.lg-wrap {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  padding: 24px; font-family: 'IBM Plex Mono', monospace;
+  background:
+    radial-gradient(1000px 460px at 15% -10%, rgba(232,115,12,0.18), transparent 60%),
+    radial-gradient(900px 480px at 100% 120%, rgba(88,166,255,0.10), transparent 55%),
+    #0D1117;
+}
+.lg-card {
+  width: 100%; max-width: 410px;
+  background: linear-gradient(180deg, var(--card2), var(--card));
+  border: 1px solid var(--border); border-radius: 18px;
+  padding: 38px 34px 30px; text-align: center;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  animation: lgFade .5s ease both;
+}
+@keyframes lgFade { from { opacity:0; transform: translateY(16px); } to { opacity:1; transform: none; } }
+.lg-logo { width: 84px; height: 84px; object-fit: contain; margin-bottom: 14px; }
+.lg-title { color: var(--text); font-size: 17px; font-weight: 700; letter-spacing: 0.5px; margin: 0 0 4px; }
+.lg-sub { color: var(--muted); font-size: 11px; letter-spacing: 1px; margin: 0 0 26px; text-transform: uppercase; }
+.lg-field { text-align: left; margin-bottom: 14px; }
+.lg-label { display: block; color: var(--muted); font-size: 11px; letter-spacing: 1px; margin-bottom: 6px; }
+.lg-input {
+  width: 100%; background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 9px;
+  padding: 11px 13px; font-family: 'IBM Plex Mono', monospace; font-size: 13px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.lg-input:focus { outline: none; border-color: var(--orange2);
+  box-shadow: 0 0 0 3px rgba(232,115,12,0.15); }
+.lg-btn {
+  width: 100%; margin-top: 8px; cursor: pointer;
+  background: var(--orange); color: #0D1117; border: none; border-radius: 10px;
+  padding: 13px; font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px; font-weight: 700; letter-spacing: 1.5px;
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.lg-btn:hover { transform: translateY(-2px); box-shadow: 0 10px 26px rgba(232,115,12,0.35); }
+.lg-msg { color: #F85149; font-size: 12px; min-height: 16px; margin-top: 14px; }
+.lg-foot { color: var(--muted); font-size: 10px; letter-spacing: 1px; margin-top: 22px;
+  padding-top: 16px; border-top: 1px solid var(--border); }
+
+@media (max-width: 720px) {
+  .nv-bar { padding: 8px 14px; gap: 10px; }
+  .nv-brand { display: none; }
+}
