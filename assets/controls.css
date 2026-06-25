@@ -1,0 +1,111 @@
+/* ============================================================
+   Pulido global de controles (filtros y botones) — tema USB
+   Aplica a TODAS las páginas sin tocar su Python.
+   Los dropdowns de Dash usan react-select v5 (clases dinámicas
+   de emotion: css-HASH-componente) → se targetean por subcadena.
+   ============================================================ */
+
+:root {
+  --c-bg:     #0D1117;
+  --c-bg2:    #11161D;
+  --c-card:   #161B22;
+  --c-border: #30363D;
+  --c-text:   #E6EDF3;
+  --c-muted:  #8B949E;
+  --c-orange: #E8730C;
+  --c-orange2:#ED7D31;
+}
+
+/* ---------- dcc.Dropdown — control (caja del filtro) ---------- */
+div[class*="-control"][class*="css-"] {
+  background: linear-gradient(180deg, var(--c-bg2), var(--c-bg)) !important;
+  border: 1px solid var(--c-border) !important;
+  border-radius: 9px !important;
+  min-height: 40px !important;
+  box-shadow: none !important;
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease !important;
+  font-family: 'IBM Plex Mono', monospace !important;
+  cursor: pointer !important;
+}
+div[class*="-control"][class*="css-"]:hover {
+  border-color: var(--c-orange) !important;
+  background: #12171f !important;
+}
+div[class*="-control"][class*="--is-focused"][class*="css-"],
+div[class*="-control"][class*="css-"]:focus-within {
+  border-color: var(--c-orange2) !important;
+  box-shadow: 0 0 0 3px rgba(232,115,12,0.18) !important;
+}
+div[class*="-singleValue"][class*="css-"] { color: var(--c-text) !important; }
+div[class*="-placeholder"][class*="css-"] { color: var(--c-muted) !important;
+  font-style: italic !important; }
+div[class*="-input"][class*="css-"], div[class*="-Input"][class*="css-"] { color: var(--c-text) !important; }
+input[class*="css-"] { color: var(--c-text) !important; }
+span[class*="-indicatorSeparator"][class*="css-"] { background-color: var(--c-border) !important; }
+div[class*="-indicatorContainer"][class*="css-"] { color: var(--c-muted) !important;
+  transition: color .15s ease !important; }
+div[class*="-indicatorContainer"][class*="css-"]:hover { color: var(--c-orange) !important; }
+div[class*="-indicatorContainer"][class*="css-"] svg { fill: currentColor !important; }
+
+/* chips de selección múltiple */
+div[class*="-multiValue"][class*="css-"] {
+  background: rgba(232,115,12,0.16) !important;
+  border: 1px solid rgba(232,115,12,0.40) !important;
+  border-radius: 7px !important;
+  overflow: hidden !important;
+}
+div[class*="-multiValue"][class*="css-"] div:first-child { color: var(--c-text) !important;
+  font-size: 11.5px !important; }
+div[class*="-multiValue"][class*="css-"] div:last-child:hover {
+  background: #C23B22 !important; color: #fff !important; }
+
+/* ---------- menú desplegable + opciones ---------- */
+div[class*="-menu"][class*="css-"] {
+  background: var(--c-card) !important;
+  border: 1px solid var(--c-border) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 14px 38px rgba(0,0,0,0.6) !important;
+  overflow: hidden !important;
+  margin-top: 6px !important;
+}
+div[class*="-MenuList"][class*="css-"]::-webkit-scrollbar { width: 7px; }
+div[class*="-MenuList"][class*="css-"]::-webkit-scrollbar-thumb {
+  background: var(--c-border); border-radius: 4px; }
+div[class*="-option"][class*="css-"] {
+  background: transparent !important;
+  color: var(--c-text) !important;
+  font-family: 'IBM Plex Mono', monospace !important;
+  font-size: 12px !important;
+  cursor: pointer !important;
+  transition: background .12s ease, color .12s ease !important;
+}
+div[class*="-option"][class*="css-"]:hover,
+div[class*="-option"][class*="--is-focused"][class*="css-"] {
+  background: rgba(232,115,12,0.18) !important; color: #fff !important;
+}
+div[class*="-option"][class*="--is-selected"][class*="css-"] {
+  background: rgba(232,115,12,0.32) !important; color: #fff !important; font-weight: 700 !important;
+}
+div[class*="-NoOptionsMessage"][class*="css-"],
+div[class*="-noOptionsMessage"][class*="css-"] { color: var(--c-muted) !important; font-size: 11px !important; }
+
+/* ---------- Checklist / RadioItems ---------- */
+input[type="checkbox"], input[type="radio"] {
+  accent-color: var(--c-orange); width: 15px; height: 15px; cursor: pointer;
+}
+label:has(> input[type="checkbox"]), label:has(> input[type="radio"]) {
+  cursor: pointer; transition: color .12s ease;
+}
+
+/* ---------- Feedback universal de botones ---------- */
+button { transition: transform .14s ease, filter .14s ease, box-shadow .14s ease; }
+button:hover:not(:disabled) { filter: brightness(1.09); }
+button:active:not(:disabled) { transform: translateY(1px); }
+
+/* ---------- DatePicker (si alguna página lo usa) ---------- */
+.SingleDatePickerInput, .DateRangePickerInput {
+  background: var(--c-bg) !important; border: 1px solid var(--c-border) !important;
+  border-radius: 9px !important;
+}
+.DateInput_input { background: var(--c-bg) !important; color: var(--c-text) !important;
+  font-family: 'IBM Plex Mono', monospace !important; }
