@@ -1499,6 +1499,10 @@ def update_cohorte(year, grupo):
 
     if _DF_DES.empty or "anio_cohorte" not in _DF_DES.columns:
         rep_items = _rep_kpi_items()
+        rep_items["fig_overview_tasa"] = RE.figure(
+            "Resumen general · tasa de no coincidencia por cohorte", _FIG_TASA_OV)
+        rep_items["fig_overview_comp"] = RE.figure(
+            "Resumen general · composición por cohorte", _FIG_COMP_OV)
         rep_items["fig_trend_line"] = RE.figure("Tendencia de no coincidencia por cohorte", fig_trend_line)
         rep_items["fig_trend_delta"] = RE.figure("Variación interanual", fig_trend_delta)
         rep_payload = RE.publish_payload("desercion", rep_filters, rep_items)
@@ -1596,6 +1600,10 @@ def update_cohorte(year, grupo):
     fig_incert_desv = incert_desviacion_fig(pairs, std_sems, std_years)
 
     rep_items = _rep_kpi_items()
+    rep_items["fig_overview_tasa"] = RE.figure(
+        "Resumen general · tasa de no coincidencia por cohorte", _FIG_TASA_OV)
+    rep_items["fig_overview_comp"] = RE.figure(
+        "Resumen general · composición por cohorte", _FIG_COMP_OV)
     rep_items["fig_trend_line"]  = RE.figure("Tendencia de no coincidencia por cohorte", fig_trend_line)
     rep_items["fig_trend_delta"] = RE.figure("Variación interanual", fig_trend_delta)
     rep_items["fig_estrato"]     = RE.figure("No coincidentes por estrato", fig_estrato)

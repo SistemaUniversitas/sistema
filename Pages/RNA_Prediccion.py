@@ -818,6 +818,15 @@ def actualizar(forma, modulo, split, institucion, nivel_str):
         "fig_dist":    RE.figure("Distribución real vs predicho", dist),
         "fig_resid":   RE.figure("Distribución de residuales", resid),
     }
+    # Comparación Forma 1 vs Forma 2 (MAE y MSE) — figuras globales cacheadas.
+    try:
+        _comp = _obtener_figs_comparacion()
+        rep_items["fig_formas"] = RE.figure(
+            "Comparación Forma 1 vs Forma 2 · MAE por módulo (test)", _comp["mae"])
+        rep_items["fig_formas_mse"] = RE.figure(
+            "Comparación Forma 1 vs Forma 2 · MSE por módulo (test)", _comp["mse"])
+    except Exception:
+        pass
     if filas:
         _cols = ["Módulo", "MAE", "RMSE", "Sesgo"]
         rep_items["table_metrics"] = RE.table(
