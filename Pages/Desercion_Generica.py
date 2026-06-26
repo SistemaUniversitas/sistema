@@ -1600,6 +1600,18 @@ def update_cohorte(year, grupo):
     fig_incert_desv = incert_desviacion_fig(pairs, std_sems, std_years)
 
     rep_items = _rep_kpi_items()
+    if stats:
+        rep_items["kpi_ontime"] = RE.kpi(
+            f"A tiempo ({_fmt_yrs(std_years)} años)", f"{stats['ontime_count']:,}", ontime_sub)
+        rep_items["kpi_early"] = RE.kpi(
+            "Antes del estándar", f"{stats['early_count']:,}",
+            f"{stats['early_pct']:.1f}% · prom. {_fmt_sems(stats['early_avg_dev'], short=True)}")
+        rep_items["kpi_late"] = RE.kpi(
+            "Después del estándar", f"{stats['late_count']:,}",
+            f"{stats['late_pct']:.1f}% · prom. {_fmt_sems(stats['late_avg_dev'], short=True)}")
+        rep_items["kpi_avgdev"] = RE.kpi(
+            "Desviación promedio global", _fmt_sems(stats["avg_dev"]),
+            f"{stats['avg_dev']:+.1f} sem respecto al estándar")
     rep_items["fig_overview_tasa"] = RE.figure(
         "Resumen general · tasa de no coincidencia por cohorte", _FIG_TASA_OV)
     rep_items["fig_overview_comp"] = RE.figure(

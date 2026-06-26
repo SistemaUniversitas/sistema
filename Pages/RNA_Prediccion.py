@@ -810,6 +810,7 @@ def actualizar(forma, modulo, split, institucion, nivel_str):
     rep_items = {
         "kpi_n":      RE.kpi("Estudiantes", f"{len(sub_valid):,}"),
         "kpi_mae":    RE.kpi("MAE", f"{mae:.4f}"),
+        "kpi_mse":    RE.kpi("MSE", f"{mse:.4f}"),
         "kpi_rmse":   RE.kpi("RMSE", f"{rmse:.4f}"),
         "kpi_r2":     RE.kpi("R²", f"{r2:.4f}"),
         "kpi_sesgo":  RE.kpi("Sesgo medio", f"{sesgo:+.4f}"),
