@@ -200,7 +200,7 @@ REPORT_SECTIONS = [
     },
     {
         "id": "desercion",
-        "title": "Deserción · No profesionalización",
+        "title": "No profesionalización",
         "store": "report-store-desercion",
         "items": [
             {"id": "kpi_total",      "label": "Presentaron Saber 11",            "kind": "kpi"},
@@ -208,6 +208,10 @@ REPORT_SECTIONS = [
             {"id": "kpi_coinc",      "label": "Coincidentes",                    "kind": "kpi"},
             {"id": "kpi_tasa",       "label": "Tasa de profesionalización",      "kind": "kpi"},
             {"id": "kpi_trend",      "label": "Tendencia (pp/año)",              "kind": "kpi"},
+            {"id": "kpi_ontime",     "label": "A tiempo",                        "kind": "kpi"},
+            {"id": "kpi_early",      "label": "Antes del estándar",              "kind": "kpi"},
+            {"id": "kpi_late",       "label": "Después del estándar",            "kind": "kpi"},
+            {"id": "kpi_avgdev",     "label": "Desviación promedio global",      "kind": "kpi"},
             {"id": "fig_overview_tasa", "label": "Resumen general · tasa de no coincidencia por cohorte", "kind": "figure"},
             {"id": "fig_overview_comp", "label": "Resumen general · composición por cohorte", "kind": "figure"},
             {"id": "fig_trend_line", "label": "Tendencia de no coincidencia por cohorte", "kind": "figure"},
@@ -227,6 +231,7 @@ REPORT_SECTIONS = [
         "items": [
             {"id": "kpi_n",       "label": "Estudiantes",                "kind": "kpi"},
             {"id": "kpi_mae",     "label": "MAE",                        "kind": "kpi"},
+            {"id": "kpi_mse",     "label": "MSE",                        "kind": "kpi"},
             {"id": "kpi_rmse",    "label": "RMSE",                       "kind": "kpi"},
             {"id": "kpi_r2",      "label": "R²",                         "kind": "kpi"},
             {"id": "kpi_sesgo",   "label": "Sesgo medio",                "kind": "kpi"},
@@ -234,6 +239,29 @@ REPORT_SECTIONS = [
             {"id": "fig_scatter", "label": "Real vs Predicho · Elipse bivariada", "kind": "figure"},
             {"id": "fig_dist",    "label": "Distribución real vs predicho", "kind": "figure"},
             {"id": "fig_resid",   "label": "Distribución de residuales",  "kind": "figure"},
+            {"id": "fig_formas",     "label": "Comparación F1 vs F2 · MAE por módulo", "kind": "figure"},
+            {"id": "fig_formas_mse", "label": "Comparación F1 vs F2 · MSE por módulo", "kind": "figure"},
+            {"id": "table_metrics","label": "Métricas por módulo",        "kind": "table"},
+        ],
+    },
+    {
+        "id": "kmeans",
+        "title": "K-Means · Predicción Saber Pro",
+        "store": "report-store-kmeans",
+        "items": [
+            {"id": "kpi_n",       "label": "Estudiantes",                "kind": "kpi"},
+            {"id": "kpi_k",       "label": "K (clústeres)",              "kind": "kpi"},
+            {"id": "kpi_mae",     "label": "MAE",                        "kind": "kpi"},
+            {"id": "kpi_mse",     "label": "MSE",                        "kind": "kpi"},
+            {"id": "kpi_rmse",    "label": "RMSE",                       "kind": "kpi"},
+            {"id": "kpi_r2",      "label": "R²",                         "kind": "kpi"},
+            {"id": "kpi_sesgo",   "label": "Sesgo medio",                "kind": "kpi"},
+            {"id": "kpi_out3s",   "label": "Outliers 3σ",                "kind": "kpi"},
+            {"id": "fig_scatter", "label": "Real vs Predicho · Elipse bivariada", "kind": "figure"},
+            {"id": "fig_dist",    "label": "Distribución real vs predicho", "kind": "figure"},
+            {"id": "fig_resid",   "label": "Distribución de residuales",  "kind": "figure"},
+            {"id": "fig_barrido", "label": "Selección de K · MAE de validación", "kind": "figure"},
+            {"id": "fig_metodos", "label": "Comparación media vs reg. lineal · MAE por módulo", "kind": "figure"},
             {"id": "fig_formas",     "label": "Comparación F1 vs F2 · MAE por módulo", "kind": "figure"},
             {"id": "fig_formas_mse", "label": "Comparación F1 vs F2 · MSE por módulo", "kind": "figure"},
             {"id": "table_metrics","label": "Métricas por módulo",        "kind": "table"},
@@ -273,7 +301,8 @@ REPORT_SECTIONS = [
 # KPIs que son ESTIMADORES (estimaciones estadísticas / de modelo), no simples
 # indicadores descriptivos.  El resto de KPIs se tratan como indicadores.
 ESTIMADOR_KEYS = {
-    "rna::kpi_mae", "rna::kpi_rmse", "rna::kpi_r2", "rna::kpi_sesgo",
+    "rna::kpi_mae", "rna::kpi_mse", "rna::kpi_rmse", "rna::kpi_r2", "rna::kpi_sesgo",
+    "kmeans::kpi_mae", "kmeans::kpi_mse", "kmeans::kpi_rmse", "kmeans::kpi_r2", "kmeans::kpi_sesgo",
     "desercion::kpi_trend",
     "probestrato::kpi_best", "probestrato::kpi_prob",
 }
@@ -942,6 +971,11 @@ _SECTION_METHOD = {
     "rna": "Se evalúa el desempeño de una Red Neuronal Artificial entrenada externamente, "
            "contrastando valores reales y predichos sobre el conjunto seleccionado mediante "
            "MAE, RMSE, R² y sesgo medio.",
+    "kmeans": "Se evalúa una predicción alternativa por K-Means (cluster-then-predict): los "
+              "estudiantes se agrupan por su vector Saber 11 y cada clúster responde con la media "
+              "de sus targets (método 'media') o una regresión lineal local (método 'reglineal'). "
+              "El número de clústeres K se elige por validación. Se contrastan valores reales y "
+              "predichos mediante MAE, RMSE, R² y sesgo medio, de forma comparable con la RNA.",
     "probestrato": "Se estima la probabilidad condicional del estrato socioeconómico dado el "
                    "nivel educativo de los padres, como frecuencia relativa observada en el año "
                    "seleccionado.",
@@ -1008,6 +1042,15 @@ def _auto_conclusions(payloads, selected_keys):
             extra = f" con un MAE de {km['value']}" if km and km.get("value") not in (None, "—") else ""
             bullets.append(f"El modelo de RNA alcanzó un R² de {kr['value']}{extra} sobre el "
                            f"conjunto seleccionado.")
+
+    if "kmeans" in sel:
+        items = (payloads.get("kmeans") or {}).get("items", {})
+        kr, km, kk = items.get("kpi_r2"), items.get("kpi_mae"), items.get("kpi_k")
+        if kr and kr.get("value") not in (None, "—"):
+            extra = f" con un MAE de {km['value']}" if km and km.get("value") not in (None, "—") else ""
+            kpart = f" (K={kk['value']} clústeres)" if kk and kk.get("value") not in (None, "—") else ""
+            bullets.append(f"La predicción alternativa por K-Means alcanzó un R² de "
+                           f"{kr['value']}{extra}{kpart} sobre el conjunto seleccionado.")
 
     if "probestrato" in sel:
         items = (payloads.get("probestrato") or {}).get("items", {})
