@@ -280,6 +280,36 @@ def _mod_desercion(kpis):
         figs.append(("Variación interanual (no coincidencia)",
                      _barv(years[1:], delta, "Variación interanual (no coincidencia)", PALETTE[5], "{:+.1f}", angle=0),
                      "Cambio de la tasa de no coincidencia respecto a la cohorte previa."))
+        # Radio de incertidumbre · tiempo entre Saber 11 y Saber Pro (estándar ≈5 años).
+        # Agregado de todas las cohortes a partir de periodo_dist del meta.
+        early = ontime = late = 0
+        for y in years:
+            for p, cnt in (meta[y].get("periodo_dist") or {}).items():
+                s = str(p).strip().split(".")[0]
+                if len(s) >= 5:
+                    yr, sem = int(s[:4]), int(s[4:5])
+                elif len(s) == 4:
+                    yr, sem = int(s), 1
+                else:
+                    continue
+                if yr < 2000 or yr > 2030 or sem not in (1, 2):
+                    continue
+                delta_s = (yr - y) * 2 + (sem - 1)
+                if delta_s < 10:
+                    early += cnt
+                elif delta_s <= 11:
+                    ontime += cnt
+                else:
+                    late += cnt
+        tot_i = early + ontime + late
+        if tot_i:
+            vals_i = [round(early / tot_i * 100, 1), round(ontime / tot_i * 100, 1),
+                      round(late / tot_i * 100, 1)]
+            figs.append(("Radio de incertidumbre · llegada a Saber Pro",
+                         _barv(["Antes", "A tiempo", "Después"], vals_i,
+                               "Radio de incertidumbre · llegada a Saber Pro (estándar ≈5 años)",
+                               PALETTE[1], "{:.1f}%", angle=0),
+                         "Momento de llegada a Saber Pro respecto al tiempo estándar (≈5 años)."))
     except Exception:
         pass
     try:
@@ -306,32 +336,60 @@ def _mod_desercion(kpis):
     return {"id": "desercion", "title": "No profesionalización", "figs": figs}
 
 
+def _grouped_bar(labels, s1, s2, n1, n2, title, c1, c2, fmt="{:.4f}"):
+    """Barras agrupadas para comparar dos formas/series por módulo."""
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=list(labels), y=list(s1), name=n1, marker_color=c1,
+                         text=[fmt.format(v) for v in s1], textposition="outside",
+                         textfont=dict(size=7)))
+    fig.add_trace(go.Bar(x=list(labels), y=list(s2), name=n2, marker_color=c2,
+                         text=[fmt.format(v) for v in s2], textposition="outside",
+                         textfont=dict(size=7)))
+    fig.update_layout(**_lay(title), barmode="group",
+                      legend=dict(orientation="h", y=1.12, x=0, font=dict(size=8)),
+                      xaxis=dict(gridcolor="rgba(0,0,0,0)", tickfont=dict(size=8)),
+                      yaxis=dict(gridcolor=GRID), uniformtext=dict(minsize=6, mode="hide"))
+    return fig
+
+
 def _mod_rna():
     figs = []
-    f1 = {}
+    f1, f2 = {}, {}
     try:
-        met = json.load(open(DATOS6 / "metricas.json", encoding="utf-8"))
+        met = json.load(open(DATOS6 / "metricas_v3_5_ensemble.json", encoding="utf-8"))
         f1 = dict(met.get("forma1", []))
+        f2 = dict(met.get("forma2", []))
     except Exception:
         pass
     mods = [("Razonamiento", "razona_cuantitat", "mod_razona_cuantitat_punt_norm_sbpro"),
             ("Lectura crítica", "lectura_critica", "mod_lectura_critica_punt_norm_sbpro"),
             ("Ciudadanas", "competen_ciudada", "mod_competen_ciudada_punt_norm_sbpro"),
             ("Inglés", "ingles", "mod_ingles_punt_norm_sbpro")]
+    labels = [m[0] for m in mods]
     if f1:
-        labels = [m[0] for m in mods]
-        mae = [round(f1.get(m[2], {}).get("mae", 0), 4) for m in mods]
-        rmse = [round(f1.get(m[2], {}).get("rmse", 0), 4) for m in mods]
-        r2 = [round(f1.get(m[2], {}).get("r2", 0), 3) for m in mods]
-        figs.append(("MAE por módulo", _barv(labels, mae, "MAE por módulo (menor es mejor)", PALETTE[0], "{:.4f}", angle=0),
-                     "Error absoluto medio del modelo por módulo."))
-        figs.append(("RMSE por módulo", _barv(labels, rmse, "RMSE por módulo", PALETTE[3], "{:.4f}", angle=0),
-                     "Raíz del error cuadrático medio."))
-        figs.append(("R² por módulo", _barv(labels, r2, "R² por módulo (mayor es mejor)", PALETTE[2], "{:.3f}", angle=0),
-                     "Coeficiente de determinación del modelo."))
+        mae1 = [round(f1.get(m[2], {}).get("mae", 0), 4) for m in mods]
+        mae2 = [round(f2.get(m[2], {}).get("mae", 0), 4) for m in mods]
+        mse1 = [round(f1.get(m[2], {}).get("mse", 0), 5) for m in mods]
+        mse2 = [round(f2.get(m[2], {}).get("mse", 0), 5) for m in mods]
+        r2_1 = [round(f1.get(m[2], {}).get("r2", 0), 3) for m in mods]
+        r2_2 = [round(f2.get(m[2], {}).get("r2", 0), 3) for m in mods]
+        figs.append(("Forma 1 vs Forma 2 · MAE por módulo",
+                     _grouped_bar(labels, mae1, mae2, "Forma 1", "Forma 2",
+                                  "Forma 1 vs Forma 2 · MAE por módulo (test)", PALETTE[0], PALETTE[1], "{:.4f}"),
+                     "Error absoluto medio por forma (menor es mejor)."))
+        figs.append(("Forma 1 vs Forma 2 · MSE por módulo",
+                     _grouped_bar(labels, mse1, mse2, "Forma 1", "Forma 2",
+                                  "Forma 1 vs Forma 2 · MSE por módulo (test)", PALETTE[3], PALETTE[5], "{:.5f}"),
+                     "Error cuadrático medio por forma (menor es mejor)."))
+        figs.append(("Forma 1 vs Forma 2 · R² por módulo",
+                     _grouped_bar(labels, r2_1, r2_2, "Forma 1", "Forma 2",
+                                  "Forma 1 vs Forma 2 · R² por módulo (test)", PALETTE[2], PALETTE[6], "{:.3f}"),
+                     "Coeficiente de determinación por forma (mayor es mejor)."))
     try:
-        cols = [f"{m[1]}_real" for m in mods] + [f"{m[1]}_pred" for m in mods]
-        df = pq.read_table(str(DATOS6 / "predicciones.parquet"), columns=cols).to_pandas()
+        cols = ["split"] + [f"{m[1]}_real" for m in mods] + [f"{m[1]}_pred" for m in mods]
+        df = pq.read_table(str(DATOS6 / "predicciones_v3_5.parquet"), columns=cols).to_pandas()
+        if "split" in df.columns and (df["split"] == "test").any():
+            df = df[df["split"] == "test"]
         for label, base, _ in mods:
             figs.append((f"Real vs Predicho · {label}",
                          _density(df[f"{base}_real"], df[f"{base}_pred"],
