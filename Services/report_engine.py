@@ -618,6 +618,9 @@ def _styles():
                                  textColor=white, leading=10)
     s["fig_desc"] = ParagraphStyle("fig_desc", fontName="Helvetica-Oblique", fontSize=8.6,
                                    textColor=GRAY, leading=12, alignment=TA_LEFT, spaceAfter=4)
+    s["fig_analysis"] = ParagraphStyle("fig_analysis", parent=s["body"], fontSize=8.7,
+                                       textColor=BODY, leading=12.5, spaceBefore=2,
+                                       spaceAfter=3, alignment=TA_JUSTIFY)
     s["toc0"] = ParagraphStyle("toc0", fontName="Helvetica-Bold", fontSize=10.5,
                                textColor=INK, leftIndent=6, firstLineIndent=-6,
                                spaceBefore=6, leading=15)
@@ -912,6 +915,196 @@ def _metrics_table(cols_rows, s):
     return t
 
 
+def _coerce_array(v):
+    """Convierte la coordenada de una traza a arreglo numpy. Plotly serializa los
+    arreglos grandes (p. ej. nubes de dispersión) como typed-array en base64
+    ({'dtype','bdata'}); aquí se decodifican para poder analizarlos."""
+    if v is None:
+        return np.asarray([], dtype="float64")
+    if isinstance(v, dict) and "bdata" in v:
+        import base64
+        try:
+            return np.frombuffer(base64.b64decode(v["bdata"]),
+                                 dtype=np.dtype(v.get("dtype", "f8")))
+        except Exception:
+            return np.asarray([], dtype="float64")
+    try:
+        return np.asarray(v, dtype="float64")
+    except (ValueError, TypeError):
+        return np.asarray([], dtype="float64")
+
+
+def _figure_description(label, fig_dict, s, caption=None):
+    """Genera una descripción de dos partes (general + específica) para un gráfico,
+    derivada de SUS PROPIOS datos —tipo de gráfico, categorías, magnitudes,
+    tendencias o correlaciones observadas— de modo que cada figura reciba un texto
+    distinto y pertinente, no un comentario genérico repetido."""
+    try:
+        fig = go.Figure(fig_dict)
+    except Exception:
+        return []
+    traces = list(fig.data)
+    if not traces:
+        return []
+    meta = getattr(fig.layout, "meta", None)
+    is_dist = isinstance(meta, dict) and meta.get("compact_dist")
+    name = _safe(caption or label or "este gráfico")
+
+    pies = [t for t in traces if getattr(t, "type", None) == "pie"]
+    bars = [t for t in traces if getattr(t, "type", None) == "bar"]
+    heats = [t for t in traces if getattr(t, "type", None) in ("heatmap", "histogram2d")]
+    scatter_all = [t for t in traces if getattr(t, "type", None) in ("scatter", "scattergl")]
+    line_traces = [t for t in scatter_all if "lines" in (getattr(t, "mode", "") or "")]
+    marker_traces = [t for t in scatter_all
+                     if "markers" in (getattr(t, "mode", "") or "")
+                     and "lines" not in (getattr(t, "mode", "") or "")]
+    disp_main = disp_x = disp_y = None
+    disp_n = 0
+    if marker_traces:
+        cand = [(t, _coerce_array(t.x), _coerce_array(t.y)) for t in marker_traces]
+        disp_main, disp_x, disp_y = max(cand, key=lambda c: min(c[1].size, c[2].size))
+        disp_n = int(min(disp_x.size, disp_y.size))
+
+    general = specific = ""
+
+    # ── Distribución de frecuencias (histograma compactado a barras) ──
+    if is_dist and bars:
+        general = (f"El gráfico «{name}» es una distribución de frecuencias: muestra cómo se "
+                   f"reparten las observaciones a lo largo del rango de valores de la variable. "
+                   f"Su objetivo es revelar la forma, el centro y la dispersión de los datos.")
+        centers, counts = [], []
+        for tr in bars:
+            xs = list(tr.x) if tr.x is not None else []
+            ys = list(tr.y) if tr.y is not None else []
+            for x, y in zip(xs, ys):
+                if _num(x) and _num(y):
+                    centers.append(float(x)); counts.append(float(y))
+        if centers and sum(counts) > 0:
+            tot = sum(counts)
+            mean = sum(c * w for c, w in zip(centers, counts)) / tot
+            ipk = max(range(len(counts)), key=lambda i: counts[i])
+            specific = (f"Se distribuyen alrededor de {tot:,.0f} observaciones entre "
+                        f"{min(centers):,.1f} y {max(centers):,.1f}, con un valor promedio cercano "
+                        f"a {mean:,.1f} y la mayor concentración en torno a {centers[ipk]:,.1f}.")
+
+    # ── Torta / participación ──
+    elif pies:
+        tr = pies[0]
+        labels = list(tr.labels) if tr.labels is not None else []
+        values = [float(v) for v in (tr.values or []) if _num(v)]
+        general = (f"El gráfico «{name}» representa la participación relativa de cada categoría "
+                   f"sobre el total. Su objetivo es mostrar cómo se reparte la población analizada "
+                   f"entre las distintas categorías.")
+        if values and sum(values) > 0:
+            total = sum(values)
+            imax = max(range(len(values)), key=lambda i: values[i])
+            imin = min(range(len(values)), key=lambda i: values[i])
+            lmax = _safe(labels[imax]) if imax < len(labels) else "—"
+            lmin = _safe(labels[imin]) if imin < len(labels) else "—"
+            specific = (f"La categoría predominante es «{lmax}» con un "
+                        f"{values[imax] / total * 100:.1f}% del total, mientras que «{lmin}» es la "
+                        f"de menor participación ({values[imin] / total * 100:.1f}%). Se consideran "
+                        f"{len(values)} categorías sobre un total de {total:,.0f}.")
+
+    # ── Mapa de calor ──
+    elif heats:
+        general = (f"El gráfico «{name}» es un mapa de calor que representa la intensidad de una "
+                   f"magnitud según el cruce de dos variables. Su objetivo es localizar, mediante "
+                   f"la escala de color, las combinaciones con mayor y menor concentración.")
+        specific = ("Las celdas de color más intenso señalan las combinaciones más frecuentes o de "
+                    "mayor valor, mientras que las más tenues corresponden a las menos "
+                    "representadas, lo que ayuda a detectar concentraciones y vacíos en el cruce.")
+
+    # ── Dispersión (nube de puntos: real vs. predicho, correlaciones) ──
+    elif marker_traces and disp_n >= 30:
+        general = (f"El gráfico «{name}» es un diagrama de dispersión que relaciona dos variables "
+                   f"punto a punto. Su objetivo es valorar el grado de acuerdo o correlación entre "
+                   f"ambas: cuanto más alineados estén los puntos, mayor es la relación.")
+        xa = disp_x[:disp_n]; ya = disp_y[:disp_n]
+        mask = ~(np.isnan(xa) | np.isnan(ya))
+        xa, ya = xa[mask], ya[mask]
+        nn = int(xa.size)
+        r = None
+        if nn >= 2:
+            try:
+                r = float(np.corrcoef(xa, ya)[0, 1])
+            except Exception:
+                r = None
+        if r is not None and not np.isnan(r):
+            fuerza = "fuerte" if abs(r) >= 0.7 else ("moderada" if abs(r) >= 0.4 else "débil")
+            signo = "positiva" if r >= 0 else "negativa"
+            specific = (f"Sobre {nn:,} puntos, la correlación entre ambas variables es {signo} y "
+                        f"{fuerza} (r = {r:.2f}); los puntos cercanos a la diagonal reflejan un "
+                        f"mayor nivel de acuerdo entre los valores comparados.")
+        elif nn:
+            specific = (f"Se representan {nn:,} puntos que permiten valorar visualmente la "
+                        f"relación y dispersión entre ambas variables.")
+
+    # ── Líneas / tendencia ──
+    elif line_traces:
+        general = (f"El gráfico «{name}» muestra la evolución de uno o más indicadores a lo largo "
+                   f"de una secuencia (por cohorte, año o módulo). Su objetivo es identificar "
+                   f"tendencias de aumento, descenso o estabilidad.")
+        main = max(line_traces, key=lambda t: len(t.y) if t.y is not None else 0)
+        ys = [float(v) for v in (main.y or []) if _num(v)]
+        xs = list(main.x) if main.x is not None else []
+        if len(ys) >= 2:
+            delta = ys[-1] - ys[0]
+            tend = "ascendente" if delta > 0 else ("descendente" if delta < 0 else "estable")
+            x0 = _safe(xs[0]) if xs else "el inicio"
+            x1 = _safe(xs[-1]) if xs else "el final"
+            serie = f" de «{_safe(main.name)}»" if getattr(main, "name", None) else ""
+            extra = (f" Se comparan {len(line_traces)} series en el mismo gráfico."
+                     if len(line_traces) > 1 else "")
+            specific = (f"La serie principal{serie} pasa de {ys[0]:,.2f} ({x0}) a {ys[-1]:,.2f} "
+                        f"({x1}), una variación {tend} de {abs(delta):,.2f}.{extra}")
+
+    # ── Barras ──
+    elif bars:
+        if len(bars) == 1:
+            cats, vals, _h = _bar_axis_values(bars[0])
+            pairs = [(c, float(v)) for c, v in zip(cats, vals) if _num(v)]
+            general = (f"El gráfico «{name}» es un diagrama de barras que compara el valor de una "
+                       f"métrica entre categorías. Su objetivo es evidenciar diferencias y "
+                       f"jerarquías entre los grupos representados.")
+            if pairs:
+                total = sum(v for _, v in pairs)
+                cmax = max(pairs, key=lambda kv: kv[1])
+                cmin = min(pairs, key=lambda kv: kv[1])
+                prom = total / len(pairs)
+                big = total >= 1000 or any(v >= 1000 for _, v in pairs)
+                fmt = lambda v: _fmt_num(v, big)
+                specific = (f"Entre las {len(pairs)} categorías, «{_safe(cmax[0])}» registra el "
+                            f"valor más alto ({fmt(cmax[1])}) y «{_safe(cmin[0])}» el más bajo "
+                            f"({fmt(cmin[1])}), con un promedio de {fmt(prom)}.")
+        else:
+            general = (f"El gráfico «{name}» compara varias series mediante barras, lo que permite "
+                       f"contrastar categorías y series simultáneamente. Su objetivo es identificar "
+                       f"qué grupos y series presentan mayor o menor magnitud.")
+            sums = []
+            for tr in bars:
+                _c, v, _o = _bar_axis_values(tr)
+                nums = [float(x) for x in v if _num(x)]
+                if nums:
+                    sums.append((_safe(getattr(tr, "name", "") or "serie"), sum(nums)))
+            if sums:
+                smax = max(sums, key=lambda kv: kv[1])
+                smin = min(sums, key=lambda kv: kv[1])
+                specific = (f"Se comparan {len(bars)} series; la de mayor magnitud acumulada es "
+                            f"«{smax[0]}» y la menor «{smin[0]}», diferencia que permite distinguir "
+                            f"los grupos con mejor y peor comportamiento.")
+
+    # ── Cualquier otro tipo de figura ──
+    if not general:
+        general = (f"El gráfico «{name}» resume visualmente la información asociada a esta sección "
+                   f"para facilitar su interpretación.")
+
+    out = [Paragraph(f"<b>Descripción general:</b> {general}", s["fig_analysis"])]
+    if specific:
+        out.append(Paragraph(f"<b>Descripción específica:</b> {specific}", s["fig_analysis"]))
+    return out
+
+
 def _figure_block(label, item, s):
     blocks = [Paragraph(_safe(label), s["h3"])]
     if item.get("desc"):
@@ -925,6 +1118,9 @@ def _figure_block(label, item, s):
             if cap:
                 sub.append(Paragraph(_safe(cap), s["caption"]))
             blocks.append(KeepTogether(sub))
+            # Descripción (general + específica) bajo cada gráfico.
+            blocks += _figure_description(label, fig_dict, s, caption=cap)
+            blocks.append(Spacer(1, 3 * mm))
     else:
         rw, rh = _render_size(item["figure"])
         png = _fig_to_png(item["figure"], width=rw, height=rh, scale=3)
@@ -934,8 +1130,10 @@ def _figure_block(label, item, s):
             mr = _figure_metrics_rows(item["figure"])
             if mr is not None:
                 fig_flow += [Spacer(1, 2 * mm), _metrics_table(mr, s)]
-        fig_flow.append(Spacer(1, 5 * mm))
         blocks.append(KeepTogether(fig_flow))
+        # Descripción (general + específica) bajo el gráfico.
+        blocks += _figure_description(label, item["figure"], s)
+        blocks.append(Spacer(1, 5 * mm))
     return blocks
 
 
@@ -1221,6 +1419,17 @@ def build_report_pdf(config, payloads, selected_keys):
         "Los <b>indicadores</b> son medidas descriptivas calculadas directamente sobre los datos "
         "observados (conteos, promedios, tasas, máximos y mínimos). Resumen el estado de la "
         "población analizada bajo los filtros aplicados.", s["body"]))
+    story.append(Paragraph(
+        "<b>Cómo leer los valores.</b> Un valor <b>positivo</b> indica presencia, aumento o un "
+        "resultado a favor de la métrica: por ejemplo, un mayor conteo, una tasa más alta, un "
+        "aporte institucional o una variación al alza respecto al periodo anterior; en términos "
+        "generales señala un comportamiento favorable o un crecimiento. Un valor <b>negativo</b> "
+        "indica lo contrario: una disminución, un déficit o una variación a la baja —como una "
+        "tendencia descendente entre cohortes o un aporte por debajo de lo esperado— por lo que "
+        "suele advertir un comportamiento desfavorable o una caída que conviene revisar. Un valor "
+        "de <b>cero</b> representa ausencia de cambio o equilibrio entre ambos extremos. Esta "
+        "lectura debe tenerse presente al interpretar los indicadores que se muestran a "
+        "continuación.", s["body"]))
     _kpi_section(story, s, payloads, available, estimador=False)
 
     # ── 5. Estimadores ──
@@ -1250,11 +1459,29 @@ def build_report_pdf(config, payloads, selected_keys):
     story.append(SectionHeading(f"{n}. Conclusiones", s["h1"], 0, "sec-conclu"))
     story.append(_rule())
     story.append(Paragraph(
-        "El reporte consolida la información seleccionada en un documento institucional único, "
-        "apto para comités de calidad, procesos de acreditación y toma de decisiones. Los "
-        "resultados deben interpretarse en el contexto de los filtros aplicados y de las "
-        "limitaciones propias de cada fuente de datos. Se recomienda complementar el análisis "
-        "automático con la valoración experta del equipo académico.", s["body"]))
+        f"El presente reporte consolidó <b>{n_comp}</b> componente(s) provenientes de "
+        f"{len(secs_used)} sección(es) del Sistema de Analítica Académica ({src_titles}), "
+        f"integrando indicadores descriptivos, estimadores estadísticos, visualizaciones y tablas "
+        f"en un único documento institucional construido a partir de los resultados que el usuario "
+        f"visualiza en pantalla.", s["body"]))
+    story.append(Paragraph("Principales hallazgos", s["h3"]))
+    for b in _auto_conclusions(payloads, available):
+        story.append(Paragraph(f"•&nbsp;&nbsp;{_safe(b)}", s["bullet"]))
+    story.append(Paragraph(
+        "En conjunto, los gráficos evidencian las distribuciones, comparaciones y tendencias más "
+        "relevantes de la población analizada, mientras que los indicadores y estimadores "
+        "cuantifican su magnitud y, cuando aplica, la evolución entre cohortes y el desempeño de "
+        "los modelos predictivos. La lectura combinada de unos y otros permite identificar "
+        "fortalezas, brechas y áreas de atención prioritaria: las categorías y series con mayor "
+        "peso señalan dónde se concentra la población o el mejor desempeño, mientras que las "
+        "variaciones negativas y los valores extremos advierten los puntos que requieren "
+        "seguimiento.", s["body"]))
+    story.append(Paragraph(
+        "Estos resultados constituyen un insumo apto para comités de calidad, procesos de "
+        "acreditación y toma de decisiones; no obstante, deben interpretarse en el contexto de los "
+        "filtros aplicados y de las limitaciones propias de cada fuente de datos. Se recomienda "
+        "complementar el análisis automático con la valoración experta del equipo académico antes "
+        "de derivar conclusiones definitivas.", s["body"]))
 
     # ── 8. Referencias ──
     n += 1
