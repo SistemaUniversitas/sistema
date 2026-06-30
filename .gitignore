@@ -22,3 +22,7 @@ Datos5/
 
 # ── Cache de K-Means muy grande para subir ─────────
 predicciones_kmeans.parquet
+
+# ── Script de analisis para el documento de teesis ─────────
+Scripts/
+Exports/
