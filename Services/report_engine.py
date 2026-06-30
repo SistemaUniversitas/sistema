@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -652,10 +653,15 @@ class ReportDoc(BaseDocTemplate):
         if isinstance(flowable, SectionHeading):
             self.notify("TOCEntry",
                         (flowable.toc_level, flowable.toc_text, self.page, flowable.toc_key))
-            self.canv.bookmarkPage(flowable.toc_key)
-            self.canv.addOutlineEntry(flowable.toc_text, flowable.toc_key,
-                                      level=flowable.toc_level,
-                                      closed=(flowable.toc_level > 0))
+            # El destino navegable NO se crea aquí: NumberedCanvas emite las páginas
+            # de forma diferida en save(), así que bookmarkPage en este punto ataría
+            # TODOS los enlaces del índice a la portada (la primera página). Se anota
+            # la marca y el destino se crea en save(), justo antes de emitir su página,
+            # cuando la referencia de página ya es la correcta.
+            marks = getattr(self.canv, "_toc_marks", None)
+            if marks is not None:
+                marks.append((self.canv.getPageNumber(), flowable.toc_level,
+                              flowable.toc_text, flowable.toc_key))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -767,6 +773,7 @@ class NumberedCanvas(canvas_mod.Canvas):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._saved_states = []
+        self._toc_marks = []     # (página, nivel, texto, clave) para el índice navegable
 
     def showPage(self):
         self._saved_states.append(dict(self.__dict__))
@@ -774,11 +781,21 @@ class NumberedCanvas(canvas_mod.Canvas):
 
     def save(self):
         total = len(self._saved_states)
+        # Destinos del índice agrupados por la página en la que está cada título.
+        marks_by_page = {}
+        for pg, level, text, key in self._toc_marks:
+            marks_by_page.setdefault(pg, []).append((level, text, key))
         for state in self._saved_states:
             self.__dict__.update(state)
             if self._pageNumber > 1:           # la portada no lleva encabezado/pie
                 self._draw_header()
                 self._draw_footer(total)
+            # Crear los marcadores/anclas ANTES de emitir la página: en este punto
+            # de la reproducción la referencia de página apunta a la página correcta,
+            # de modo que los enlaces del índice llevan al título y no a la portada.
+            for level, text, key in marks_by_page.get(self._pageNumber, []):
+                self.bookmarkPage(key)
+                self.addOutlineEntry(text, key, level=level, closed=(level > 0))
             canvas_mod.Canvas.showPage(self)
         canvas_mod.Canvas.save(self)
 
@@ -866,7 +883,7 @@ def _kpi_grid(kpis, s, accent=USB_ORANGE):
 
 def _data_table(columns, rows, s):
     header = [Paragraph(_safe(c), s["cell_h"]) for c in columns]
-    body = [[Paragraph("" if v is None else _safe(v), s["cell"]) for v in r] for r in rows]
+    body = [[Paragraph("" if v is None else _fmt_cell(v), s["cell"]) for v in r] for r in rows]
     data = [header] + body
     ncols = max(1, len(columns))
     if ncols == 1:
@@ -934,11 +951,130 @@ def _coerce_array(v):
         return np.asarray([], dtype="float64")
 
 
+def _axis_title(layout, axis):
+    """Texto del título de un eje ('xaxis'/'yaxis'), saneado, o '' si no hay."""
+    ax = getattr(layout, axis, None)
+    title = getattr(ax, "title", None) if ax is not None else None
+    txt = getattr(title, "text", None) if title is not None else None
+    return _safe(txt).strip() if txt else ""
+
+
+# Pistas de unidad que aparecen en los títulos de los ejes del dashboard.
+_PCT_HINTS = ("%", "porcentaje", "proporción", "proporcion", "tasa", "probabilidad")
+_PP_HINTS = ("(pp)", "pp/", "puntos porcentuales", "punto porcentual")
+
+
+def _axis_meaning(title):
+    """Descompone el título de un eje en (sustantivo legible, unidad, aclaración).
+
+    Es la pieza clave para que las descripciones sean concretas y digan la unidad
+    SIN nada hardcodeado: el propio gráfico lleva en sus ejes qué mide y en qué
+    unidad.  Ej.:  'Tasa (%)'            -> ('tasa', '%', '')
+                   'Δ tasa previa (pp)'  -> ('Delta tasa previa', 'pp', '')
+                   'Cohorte (año Saber 11)' -> ('cohorte', '', 'año Saber 11')
+                   'Estudiantes coincidentes' -> ('estudiantes coincidentes', '', '')."""
+    if not title:
+        return "", "", ""
+    low = title.lower()
+    unit = ""
+    if any(h in low for h in _PP_HINTS):
+        unit = "pp"
+    elif any(h in low for h in _PCT_HINTS):
+        unit = "%"
+    # Última aclaración entre paréntesis ('(año Saber 11)', '(normalizado)', '(%)').
+    clar, noun = "", title
+    m = re.search(r"\(([^)]*)\)\s*$", title)
+    if m:
+        inside = m.group(1).strip()
+        noun = title[:m.start()].strip()
+        low_in = inside.lower()
+        # Si el paréntesis solo expresaba la unidad, no es una aclaración útil.
+        if not (inside in ("%",) or "pp" in low_in or "porcentual" in low_in):
+            clar = inside
+    noun = noun.strip(" ·-—:")
+    return noun, unit, clar
+
+
+def _lc_first(t):
+    """Baja a minúscula la inicial para usar el texto a mitad de frase, pero
+    respeta siglas (MAE, RMSE) y nombres con mayúscula interna."""
+    if not t:
+        return t
+    first = t.split(" ", 1)[0]
+    if first.isupper() or (len(first) > 1 and first[1].isupper()):
+        return t
+    return t[:1].lower() + t[1:]
+
+
+def _fmt_val(val, unit=""):
+    """Formatea un número con su unidad para la prosa de las descripciones,
+    ajustando los decimales a la magnitud (las métricas pequeñas como MAE/RMSE
+    necesitan más precisión que los conteos)."""
+    if not _num(val):
+        return _safe(str(val))
+    if unit == "%":
+        return f"{val:.1f}%"
+    if unit == "pp":
+        return f"{val:+.1f} pp"
+    a = abs(val)
+    if a >= 1000:
+        return f"{val:,.0f}"
+    if float(val).is_integer():
+        return f"{int(val):,}"
+    if a >= 10:
+        return f"{val:,.1f}"
+    if a >= 1:
+        return f"{val:,.2f}"
+    if a >= 0.1:
+        return f"{val:.3f}".rstrip("0").rstrip(".")
+    return f"{val:.4f}".rstrip("0").rstrip(".")
+
+
+# Magnitudes que NO se deben sumar entre categorías (promedios, tasas, puntajes,
+# errores…): comparar series por su promedio, no por su total.
+_AVG_HINTS = ("promedio", "media", "puntaje", "tasa", "índice", "indice",
+              "probabilidad", "porcentaje", "proporción", "proporcion",
+              "normalizado", "coeficiente", "error", "mae", "mse", "rmse",
+              "r²", "r2")
+
+
+def _is_averaged(ynoun, yunit):
+    """True si la magnitud del eje Y es de tipo promedio/tasa/score (no aditiva)."""
+    low = (ynoun or "").lower()
+    return yunit == "%" or any(h in low for h in _AVG_HINTS)
+
+
+def _fmt_cell(v):
+    """Formatea el valor de una celda de tabla: limpia el ruido de los float32
+    (p. ej. 0.47999998927116394 -> 0.48) y agrupa miles en los enteros, dejando
+    como máximo 4 decimales.  Cualquier otro tipo se pasa tal cual."""
+    if isinstance(v, bool):
+        return _safe(str(v))
+    if isinstance(v, (int, np.integer)):
+        return f"{int(v):,}"
+    if isinstance(v, (float, np.floating)):
+        x = float(v)
+        if not np.isfinite(x):
+            return _safe(str(v))
+        if x.is_integer():
+            return f"{int(x):,}"
+        return f"{x:.4f}".rstrip("0").rstrip(".")
+    return _safe(v)
+
+
 def _figure_description(label, fig_dict, s, caption=None):
-    """Genera una descripción de dos partes (general + específica) para un gráfico,
-    derivada de SUS PROPIOS datos —tipo de gráfico, categorías, magnitudes,
-    tendencias o correlaciones observadas— de modo que cada figura reciba un texto
-    distinto y pertinente, no un comentario genérico repetido."""
+    """Genera una descripción de dos partes para un gráfico, de forma totalmente
+    automática (nada hardcodeado por figura):
+
+    · «general»  — explica EN LENGUAJE LLANO qué muestra el gráfico y para qué
+      sirve, usando el significado de sus propios ejes/etiquetas, de modo que se
+      entienda aunque no se sepa leer el gráfico.
+    · «específica» — entrega la lectura/conclusión concreta de los datos (dónde
+      está lo más alto y lo más bajo, la tendencia, el promedio…), indicando la
+      UNIDAD de los números cuando el gráfico la declara en sus ejes.
+
+    Toda la información se deriva de la propia figura: tipo de traza, títulos de
+    los ejes (que aportan el significado y la unidad), categorías y magnitudes."""
     try:
         fig = go.Figure(fig_dict)
     except Exception:
@@ -965,13 +1101,23 @@ def _figure_description(label, fig_dict, s, caption=None):
         disp_main, disp_x, disp_y = max(cand, key=lambda c: min(c[1].size, c[2].size))
         disp_n = int(min(disp_x.size, disp_y.size))
 
+    # Significado y unidad que el propio gráfico declara en sus ejes.
+    xnoun, xunit, _xclar = _axis_meaning(_axis_title(fig.layout, "xaxis"))
+    ynoun, yunit, _yclar = _axis_meaning(_axis_title(fig.layout, "yaxis"))
+    qty = _lc_first(ynoun)   # qué se mide (eje vertical)
+    dim = _lc_first(xnoun)   # con qué se agrupa/recorre (eje horizontal)
+
+    def _cap(t):
+        return (t[:1].upper() + t[1:]) if t else t
+
     general = specific = ""
 
     # ── Distribución de frecuencias (histograma compactado a barras) ──
     if is_dist and bars:
-        general = (f"El gráfico «{name}» es una distribución de frecuencias: muestra cómo se "
-                   f"reparten las observaciones a lo largo del rango de valores de la variable. "
-                   f"Su objetivo es revelar la forma, el centro y la dispersión de los datos.")
+        var = _lc_first(xnoun) or "la variable analizada"
+        general = (f"Este gráfico muestra cómo se reparten los valores de {var} entre todos los "
+                   f"casos: permite ver qué valores son los más habituales, cuáles aparecen poco "
+                   f"y alrededor de qué cifra se agrupa la mayoría.")
         centers, counts = [], []
         for tr in bars:
             xs = list(tr.x) if tr.x is not None else []
@@ -983,121 +1129,297 @@ def _figure_description(label, fig_dict, s, caption=None):
             tot = sum(counts)
             mean = sum(c * w for c, w in zip(centers, counts)) / tot
             ipk = max(range(len(counts)), key=lambda i: counts[i])
-            specific = (f"Se distribuyen alrededor de {tot:,.0f} observaciones entre "
-                        f"{min(centers):,.1f} y {max(centers):,.1f}, con un valor promedio cercano "
-                        f"a {mean:,.1f} y la mayor concentración en torno a {centers[ipk]:,.1f}.")
+            specific = (f"Los valores van desde {_fmt_val(min(centers), xunit)} hasta "
+                        f"{_fmt_val(max(centers), xunit)}, con un promedio cercano a "
+                        f"{_fmt_val(mean, xunit)} y la mayor concentración en torno a "
+                        f"{_fmt_val(centers[ipk], xunit)}. En total se resumen {tot:,.0f} casos.")
 
     # ── Torta / participación ──
     elif pies:
         tr = pies[0]
         labels = list(tr.labels) if tr.labels is not None else []
         values = [float(v) for v in (tr.values or []) if _num(v)]
-        general = (f"El gráfico «{name}» representa la participación relativa de cada categoría "
-                   f"sobre el total. Su objetivo es mostrar cómo se reparte la población analizada "
-                   f"entre las distintas categorías.")
+        general = (f"Este gráfico reparte el total entre las categorías de «{name}» y muestra qué "
+                   f"porción del conjunto representa cada una, de modo que se ve de inmediato "
+                   f"cuáles pesan más y cuáles menos.")
         if values and sum(values) > 0:
             total = sum(values)
             imax = max(range(len(values)), key=lambda i: values[i])
             imin = min(range(len(values)), key=lambda i: values[i])
             lmax = _safe(labels[imax]) if imax < len(labels) else "—"
             lmin = _safe(labels[imin]) if imin < len(labels) else "—"
-            specific = (f"La categoría predominante es «{lmax}» con un "
-                        f"{values[imax] / total * 100:.1f}% del total, mientras que «{lmin}» es la "
-                        f"de menor participación ({values[imin] / total * 100:.1f}%). Se consideran "
-                        f"{len(values)} categorías sobre un total de {total:,.0f}.")
+            specific = (f"La categoría más frecuente es «{lmax}», que reúne el "
+                        f"{values[imax] / total * 100:.1f}% del total, y la menos frecuente es "
+                        f"«{lmin}» con el {values[imin] / total * 100:.1f}%. Se reparten "
+                        f"{total:,.0f} casos entre {len(values)} categorías.")
 
     # ── Mapa de calor ──
     elif heats:
-        general = (f"El gráfico «{name}» es un mapa de calor que representa la intensidad de una "
-                   f"magnitud según el cruce de dos variables. Su objetivo es localizar, mediante "
-                   f"la escala de color, las combinaciones con mayor y menor concentración.")
-        specific = ("Las celdas de color más intenso señalan las combinaciones más frecuentes o de "
-                    "mayor valor, mientras que las más tenues corresponden a las menos "
-                    "representadas, lo que ayuda a detectar concentraciones y vacíos en el cruce.")
+        h = heats[0]
+        a, b = _lc_first(xnoun) or "una variable", _lc_first(ynoun) or "otra variable"
+        xs = list(h.x) if h.x is not None else []
+        ys = list(h.y) if h.y is not None else []
+        try:
+            zarr = np.asarray(h.z, dtype="float64")
+        except Exception:
+            zarr = None
+        # Un mapa centrado en 0 (zmid) o con valores negativos NO cuenta casos:
+        # codifica con color la magnitud y el SIGNO de una cantidad (p. ej. el
+        # aporte SB Pro - SB 11). Se describe como tal, no como una densidad.
+        is_signed = getattr(h, "zmid", None) is not None or (
+            zarr is not None and zarr.size and np.nanmin(zarr) < 0)
+        # Nombre de la cantidad codificada por el color (título de la barra de color).
+        qname = ""
+        try:
+            cb = getattr(h, "colorbar", None)
+            ct = getattr(getattr(cb, "title", None), "text", None) if cb else None
+            qname = _lc_first(_safe(ct).strip()) if ct else ""
+        except Exception:
+            qname = ""
+
+        if is_signed:
+            q = qname or "el valor medido"
+            general = (f"Este mapa de calor muestra, para cada combinación de {a} y {b}, la "
+                       f"magnitud y el signo de {q}. En lugar de contar casos, usa una escala de "
+                       f"color de dos sentidos: un extremo marca los valores más positivos y el "
+                       f"otro los más negativos, de modo que se ve de un vistazo dónde {q} sube y "
+                       f"dónde baja.")
+            specific = (f"Las celdas de un color señalan dónde {q} es más alto y las del color "
+                        f"opuesto, dónde es más bajo.")
+            try:
+                if zarr is not None and zarr.size:
+                    iyx, ixx = np.unravel_index(int(np.nanargmax(zarr)), zarr.shape)
+                    iyn, ixn = np.unravel_index(int(np.nanargmin(zarr)), zarr.shape)
+                    cxx = _safe(xs[ixx]) if ixx < len(xs) else "—"
+                    cyx = _safe(ys[iyx]) if iyx < len(ys) else "—"
+                    cxn = _safe(xs[ixn]) if ixn < len(xs) else "—"
+                    cyn = _safe(ys[iyn]) if iyn < len(ys) else "—"
+                    vmx = float(zarr[iyx, ixx]); vmn = float(zarr[iyn, ixn])
+                    specific = (f"El valor más alto de {q} se da en «{cxx}» / «{cyx}» ({vmx:+.1f}) "
+                                f"y el más bajo en «{cxn}» / «{cyn}» ({vmn:+.1f}); el resto de "
+                                f"celdas queda entre esos dos extremos según su color.")
+            except Exception:
+                pass
+        else:
+            general = (f"Este mapa de calor cruza {a} con {b} y usa la intensidad del color para "
+                       f"mostrar dónde se acumulan más casos: las celdas más intensas son las "
+                       f"combinaciones más frecuentes y las más claras, las menos habituales.")
+            specific = ("Las zonas de color más intenso indican las combinaciones más frecuentes y "
+                        "las más claras, las menos habituales, lo que ayuda a detectar dónde se "
+                        "agrupan los casos y qué cruces casi no aparecen.")
+            try:
+                # Solo se nombra la celda pico cuando los ejes son categóricos; con ejes
+                # numéricos (histograma 2D) el valor de la celda no es informativo.
+                if xs and ys and not _num(xs[0]) and not _num(ys[0]) and zarr is not None:
+                    iy, ix = np.unravel_index(int(np.nanargmax(zarr)), zarr.shape)
+                    cx = _safe(xs[ix]) if ix < len(xs) else "—"
+                    cy = _safe(ys[iy]) if iy < len(ys) else "—"
+                    specific = (f"La combinación más frecuente es «{cx}» con «{cy}», donde se "
+                                f"concentra el mayor número de casos; las zonas más claras señalan "
+                                f"los cruces que casi no se dan.")
+            except Exception:
+                pass
 
     # ── Dispersión (nube de puntos: real vs. predicho, correlaciones) ──
     elif marker_traces and disp_n >= 30:
-        general = (f"El gráfico «{name}» es un diagrama de dispersión que relaciona dos variables "
-                   f"punto a punto. Su objetivo es valorar el grado de acuerdo o correlación entre "
-                   f"ambas: cuanto más alineados estén los puntos, mayor es la relación.")
-        xa = disp_x[:disp_n]; ya = disp_y[:disp_n]
-        mask = ~(np.isnan(xa) | np.isnan(ya))
-        xa, ya = xa[mask], ya[mask]
-        nn = int(xa.size)
-        r = None
-        if nn >= 2:
-            try:
-                r = float(np.corrcoef(xa, ya)[0, 1])
-            except Exception:
-                r = None
-        if r is not None and not np.isnan(r):
-            fuerza = "fuerte" if abs(r) >= 0.7 else ("moderada" if abs(r) >= 0.4 else "débil")
-            signo = "positiva" if r >= 0 else "negativa"
-            specific = (f"Sobre {nn:,} puntos, la correlación entre ambas variables es {signo} y "
-                        f"{fuerza} (r = {r:.2f}); los puntos cercanos a la diagonal reflejan un "
-                        f"mayor nivel de acuerdo entre los valores comparados.")
-        elif nn:
-            specific = (f"Se representan {nn:,} puntos que permiten valorar visualmente la "
-                        f"relación y dispersión entre ambas variables.")
+        es_pred = "real" in xnoun.lower() and "predich" in ynoun.lower()
+        if es_pred:
+            general = ("Este gráfico compara, caso por caso, el valor real con el valor que estima "
+                       "el modelo. Cada punto es un estudiante; cuanto más cerca esté de la línea "
+                       "diagonal, más se parece la estimación al dato real.")
+        else:
+            xv = _lc_first(xnoun) or "una variable"
+            yv = _lc_first(ynoun) or "otra variable"
+            general = (f"Este gráfico relaciona {xv} con {yv}, un punto por caso. Sirve para ver si "
+                       f"ambas se mueven juntas: cuanto más alineados estén los puntos, más "
+                       f"estrecha es la relación entre ellas.")
+        if es_pred:
+            # Real vs. predicho: la métrica correcta es el coeficiente de
+            # determinación R² (qué tanta variación del valor real explica el
+            # modelo), NO la correlación de Pearson. Se calcula sobre TODOS los
+            # puntos del gráfico (incluidos los atípicos), que es lo que mide R².
+            xs_all, ys_all = [], []
+            for t in marker_traces:
+                tx, ty = _coerce_array(t.x), _coerce_array(t.y)
+                k = int(min(tx.size, ty.size))
+                if k >= 5:                       # descarta marcas sueltas (p. ej. el centroide)
+                    xs_all.append(tx[:k]); ys_all.append(ty[:k])
+            if xs_all:
+                xa = np.concatenate(xs_all); ya = np.concatenate(ys_all)
+            else:
+                xa, ya = disp_x[:disp_n], disp_y[:disp_n]
+            mask = ~(np.isnan(xa) | np.isnan(ya))
+            xa, ya = xa[mask], ya[mask]
+            nn = int(xa.size)
+            r2 = None
+            if nn >= 2:
+                ss_res = float(np.sum((xa - ya) ** 2))           # real - predicho
+                ss_tot = float(np.sum((xa - xa.mean()) ** 2))
+                if ss_tot > 0:
+                    r2 = 1.0 - ss_res / ss_tot
+            if r2 is not None:
+                if r2 >= 0.7:
+                    cierre = "las estimaciones se aproximan muy bien a los valores reales"
+                elif r2 >= 0.4:
+                    cierre = ("las estimaciones siguen la tendencia real, pero con un margen de "
+                              "error apreciable")
+                elif r2 >= 0:
+                    cierre = "las estimaciones todavía se alejan bastante de los valores reales"
+                else:
+                    cierre = ("las estimaciones son peores que usar simplemente el promedio de los "
+                              "valores reales")
+                if r2 >= 0:
+                    medida = (f"el modelo explica alrededor del {r2 * 100:.0f}% de la variación de "
+                              f"los valores reales (coeficiente de determinación R² = {r2:.2f})")
+                else:
+                    medida = (f"el modelo no logra explicar la variación de los valores reales "
+                              f"(coeficiente de determinación R² = {r2:.2f}, negativo)")
+                specific = f"Sobre {nn:,} casos, {medida}: {cierre}."
+            elif nn:
+                specific = (f"Se representan {nn:,} casos que comparan a simple vista el valor real "
+                            f"con el estimado por el modelo.")
+        else:
+            xa = disp_x[:disp_n]; ya = disp_y[:disp_n]
+            mask = ~(np.isnan(xa) | np.isnan(ya))
+            xa, ya = xa[mask], ya[mask]
+            nn = int(xa.size)
+            r = None
+            if nn >= 2:
+                try:
+                    r = float(np.corrcoef(xa, ya)[0, 1])
+                except Exception:
+                    r = None
+            if r is not None and not np.isnan(r):
+                fuerza = "fuerte" if abs(r) >= 0.7 else ("moderada" if abs(r) >= 0.4 else "débil")
+                signo = "positiva" if r >= 0 else "negativa"
+                cierre = ("cuando una sube, la otra tiende a subir también" if r >= 0
+                          else "cuando una sube, la otra tiende a bajar")
+                referencia = "1" if r >= 0 else "-1"
+                specific = (f"Sobre {nn:,} casos, la relación es {signo} y {fuerza} (coeficiente "
+                            f"r = {r:.2f}, donde un valor cercano a {referencia} indica una "
+                            f"relación más estrecha): {cierre}.")
+            elif nn:
+                specific = (f"Se representan {nn:,} casos que permiten valorar a simple vista qué "
+                            f"tan relacionadas están ambas variables.")
 
     # ── Líneas / tendencia ──
     elif line_traces:
-        general = (f"El gráfico «{name}» muestra la evolución de uno o más indicadores a lo largo "
-                   f"de una secuencia (por cohorte, año o módulo). Su objetivo es identificar "
-                   f"tendencias de aumento, descenso o estabilidad.")
+        qy = qty or "el indicador"
+        general = (f"Este gráfico muestra cómo evoluciona {qy} a lo largo de "
+                   f"{dim or 'la secuencia de períodos'}: permite ver de un vistazo si la cifra "
+                   f"sube, baja o se mantiene estable de un período a otro.")
         main = max(line_traces, key=lambda t: len(t.y) if t.y is not None else 0)
-        ys = [float(v) for v in (main.y or []) if _num(v)]
-        xs = list(main.x) if main.x is not None else []
+        xs_raw = list(main.x) if main.x is not None else []
+        raw = list(main.y) if main.y is not None else []
+        # Área apilada normalizada a % (groupnorm='percent'): los valores crudos de
+        # la traza NO son los que se ven; hay que normalizarlos por el total apilado
+        # de cada punto, o se reportarían cifras absurdas (p. ej. 210555%).
+        sg = getattr(main, "stackgroup", None)
+        norm_pct = sg is not None and any(
+            getattr(t, "groupnorm", None) == "percent" for t in line_traces)
+        if norm_pct:
+            group = [t for t in line_traces if getattr(t, "stackgroup", None) == sg]
+            ys, xs = [], []
+            for i in range(len(raw)):
+                if not _num(raw[i]):
+                    continue
+                tot = 0.0
+                for t in group:
+                    ty = list(t.y) if t.y is not None else []
+                    if i < len(ty) and _num(ty[i]):
+                        tot += float(ty[i])
+                if tot > 0:
+                    ys.append(float(raw[i]) / tot * 100.0)
+                    xs.append(xs_raw[i] if i < len(xs_raw) else None)
+            yunit_eff = "%"
+        else:
+            ys = [float(v) for v in raw if _num(v)]
+            xs = xs_raw
+            yunit_eff = yunit
         if len(ys) >= 2:
             delta = ys[-1] - ys[0]
-            tend = "ascendente" if delta > 0 else ("descendente" if delta < 0 else "estable")
+            rumbo = "al alza" if delta > 0 else ("a la baja" if delta < 0 else "estable")
+            verbo = "subió" if delta > 0 else ("bajó" if delta < 0 else "se mantuvo")
             x0 = _safe(xs[0]) if xs else "el inicio"
             x1 = _safe(xs[-1]) if xs else "el final"
-            serie = f" de «{_safe(main.name)}»" if getattr(main, "name", None) else ""
-            extra = (f" Se comparan {len(line_traces)} series en el mismo gráfico."
+            if yunit_eff == "%":
+                v0, v1 = f"{ys[0]:.1f}%", f"{ys[-1]:.1f}%"
+                chg = f"{abs(delta):.1f} puntos porcentuales"
+            else:
+                v0, v1 = _fmt_val(ys[0], yunit_eff), _fmt_val(ys[-1], yunit_eff)
+                chg = _fmt_val(abs(delta), yunit_eff)
+            multi = (f" Para el contraste, el gráfico incluye {len(line_traces)} series."
                      if len(line_traces) > 1 else "")
-            specific = (f"La serie principal{serie} pasa de {ys[0]:,.2f} ({x0}) a {ys[-1]:,.2f} "
-                        f"({x1}), una variación {tend} de {abs(delta):,.2f}.{extra}")
+            serie_lbl = _safe(getattr(main, "name", "") or "")
+            sujeto = (f"La proporción de «{serie_lbl}»" if (norm_pct and serie_lbl)
+                      else _cap(qy))
+            specific = (f"{sujeto} {verbo} de {v0} en {x0} a {v1} en {x1}, una variación de "
+                        f"{chg}. En conjunto, la tendencia es {rumbo}.{multi}")
 
     # ── Barras ──
     elif bars:
         if len(bars) == 1:
             cats, vals, _h = _bar_axis_values(bars[0])
             pairs = [(c, float(v)) for c, v in zip(cats, vals) if _num(v)]
-            general = (f"El gráfico «{name}» es un diagrama de barras que compara el valor de una "
-                       f"métrica entre categorías. Su objetivo es evidenciar diferencias y "
-                       f"jerarquías entre los grupos representados.")
+            qy = qty or "la cantidad de casos"
+            dm = dim or "cada grupo"
+            general = (f"Este gráfico compara {qy} según {dm}, de manera que se ve rápidamente en "
+                       f"qué grupo se acumula más y en cuál menos, y qué tan grandes son las "
+                       f"diferencias entre ellos.")
             if pairs:
                 total = sum(v for _, v in pairs)
                 cmax = max(pairs, key=lambda kv: kv[1])
                 cmin = min(pairs, key=lambda kv: kv[1])
                 prom = total / len(pairs)
-                big = total >= 1000 or any(v >= 1000 for _, v in pairs)
-                fmt = lambda v: _fmt_num(v, big)
-                specific = (f"Entre las {len(pairs)} categorías, «{_safe(cmax[0])}» registra el "
-                            f"valor más alto ({fmt(cmax[1])}) y «{_safe(cmin[0])}» el más bajo "
-                            f"({fmt(cmin[1])}), con un promedio de {fmt(prom)}.")
+                vmax, vmin = _fmt_val(cmax[1], yunit), _fmt_val(cmin[1], yunit)
+                vprom = _fmt_val(prom, yunit)
+                comp = ""
+                if yunit != "%" and prom > 0 and cmax[1] / prom >= 1.5:
+                    comp = f" Eso equivale a unas {cmax[1] / prom:.1f} veces el promedio."
+                specific = (f"El valor más alto de {qy} se registra en «{_safe(cmax[0])}» ({vmax}) "
+                            f"y el más bajo en «{_safe(cmin[0])}» ({vmin}), con un promedio de "
+                            f"{vprom}.{comp}")
         else:
-            general = (f"El gráfico «{name}» compara varias series mediante barras, lo que permite "
-                       f"contrastar categorías y series simultáneamente. Su objetivo es identificar "
-                       f"qué grupos y series presentan mayor o menor magnitud.")
-            sums = []
+            qy = qty or "los valores"
+            dm = dim or "las categorías"
+            names = [_safe(getattr(t, "name", "") or "serie") for t in bars]
+            general = (f"Este gráfico enfrenta varias series ({', '.join(names)}) a lo largo de "
+                       f"{dm}, para contrastar cómo se comporta cada una y dónde se separan más.")
+            # Las magnitudes promediables (puntajes, tasas, errores…) se comparan
+            # por su PROMEDIO entre categorías; los conteos, por su total (sumar
+            # un puntaje normalizado no tiene sentido y daría cifras imposibles).
+            averaged = _is_averaged(ynoun, yunit)
+            aggs = []
             for tr in bars:
                 _c, v, _o = _bar_axis_values(tr)
                 nums = [float(x) for x in v if _num(x)]
                 if nums:
-                    sums.append((_safe(getattr(tr, "name", "") or "serie"), sum(nums)))
-            if sums:
-                smax = max(sums, key=lambda kv: kv[1])
-                smin = min(sums, key=lambda kv: kv[1])
-                specific = (f"Se comparan {len(bars)} series; la de mayor magnitud acumulada es "
-                            f"«{smax[0]}» y la menor «{smin[0]}», diferencia que permite distinguir "
-                            f"los grupos con mejor y peor comportamiento.")
+                    val = (sum(nums) / len(nums)) if averaged else sum(nums)
+                    aggs.append((_safe(getattr(tr, "name", "") or "serie"), val))
+            if aggs:
+                smax = max(aggs, key=lambda kv: kv[1])
+                smin = min(aggs, key=lambda kv: kv[1])
+                fmax, fmin = _fmt_val(smax[1], yunit), _fmt_val(smin[1], yunit)
+                ref = max(abs(smax[1]), abs(smin[1]), 1e-9)
+                criterio = "el promedio" if averaged else "el total"
+                if (smax[0] == smin[0] or (smax[1] - smin[1]) / ref <= 0.02
+                        or fmax == fmin):
+                    specific = (f"Las series comparadas presentan {criterio} de {qy} muy parecido a "
+                                f"lo largo de {dm}, sin que ninguna se imponga con claridad sobre "
+                                f"las demás.")
+                elif averaged:
+                    specific = (f"En promedio a lo largo de {dm}, «{smax[0]}» es la serie más alta "
+                                f"({fmax}) y «{smin[0]}» la más baja ({fmin}), lo que indica cuál "
+                                f"grupo presenta valores más altos.")
+                else:
+                    specific = (f"Sumando {qy} a lo largo de {dm}, «{smax[0]}» acumula el mayor "
+                                f"total ({fmax}) y «{smin[0]}» el menor ({fmin}), lo que indica "
+                                f"cuál grupo presenta valores más altos en conjunto.")
 
     # ── Cualquier otro tipo de figura ──
     if not general:
-        general = (f"El gráfico «{name}» resume visualmente la información asociada a esta sección "
-                   f"para facilitar su interpretación.")
+        general = (f"Este gráfico resume de forma visual la información de «{name}» para facilitar "
+                   f"su lectura e interpretación.")
 
     out = [Paragraph(f"<b>Descripción general:</b> {general}", s["fig_analysis"])]
     if specific:
